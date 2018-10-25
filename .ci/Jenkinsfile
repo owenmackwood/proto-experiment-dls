@@ -1,0 +1,13 @@
+@Library("jenlib") _
+
+wafDefaultPipeline(projects: ["template-experiment-dls"],
+                   app: "visionary-dls",
+                   moduleOptions: [modules: ["ppu-toolchain"]],
+                   notificationChannel: "#dls-software",
+                   configureInstallOptions: "--dls-version=2 --cross-prefix powerpc-ppu")
+
+wafDefaultPipeline(projects: ["template-experiment-dls"],
+                   app: "visionary-dls",
+                   moduleOptions: [modules: ["ppu-toolchain"]],
+                   notificationChannel: "#dls-software",
+                   configureInstallOptions: "--dls-version=3 --cross-prefix powerpc-ppu")

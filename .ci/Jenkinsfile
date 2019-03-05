@@ -4,4 +4,16 @@ wafDefaultPipeline(projects: ["template-experiment-dls"],
                    app: "visionary-dls",
                    moduleOptions: [modules: ["ppu-toolchain"]],
                    notificationChannel: "#dls-software",
-                   configureInstallOptions: "--dls-version=2 --cross-prefix powerpc-ppu")
+                   configureInstallOptions: "--dls-version=2 --cross-prefix powerpc-ppu",
+                   postPipelineCleanup: false,
+                   warningsIgnorePattern: "*/lib-rcf/*")
+
+runOnSlave(label: "frontend") {
+	publishHTML([allowMissing: false,
+	            alwaysLinkToLastBuild: false,
+	            keepAll: false,
+	            reportDir: 'doc/template-experiment-dls/html/',
+	            reportFiles: 'classes.html',
+	            reportName: 'Source Code Documentation',
+	            reportTitles: ''])
+}

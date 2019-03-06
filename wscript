@@ -6,13 +6,17 @@ def depends(ctx):
     ctx('dls2calib')
     ctx('code-format')
 
+
 def options(opt):
     opt.load("doxygen")
     opt.load('test_base')
+    opt.load('pytest')
+
 
 def configure(conf):
     conf.load("doxygen")
     conf.load('test_base')
+    conf.load('pytest')
 
 
 def build(bld):
@@ -28,12 +32,22 @@ def build(bld):
     )
 
     bld(
+        name = 'template_python_libraries',
         features = 'py use',
-        source = bld.path.ant_glob('src/py/**/*'),
+        source = bld.path.ant_glob('src/py/**/*.py'),
         relative_trick = True,
         install_from = bld.path.find_node('src/py'),
         install_path = '${PREFIX}/lib',
         use = ['dlens'],
+    )
+
+    bld(
+        name='template_pyhwtests',
+        tests=bld.path.ant_glob('test/hw/py/**/*.py'),
+        features='use pytest',
+        use='template_python_libraries',
+        install_path='${PREFIX}/bin/tests',
+        skip_run=False,
     )
 
     bld.program(

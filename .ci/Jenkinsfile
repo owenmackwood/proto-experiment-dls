@@ -5,6 +5,7 @@ wafDefaultPipeline(projects: ["template-experiment-dls"],
                    moduleOptions: [modules: ["ppu-toolchain"]],
                    notificationChannel: "#dls-software",
                    configureInstallOptions: "--dls-version=2",
+                   testSlurmResource: [partition: "dls", gres: "B291656"],
                    postPipelineCleanup: false,
                    warningsIgnorePattern: "*/lib-rcf/*")
 

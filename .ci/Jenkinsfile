@@ -1,22 +1,28 @@
 @Library("jenlib") _
 
-wafDefaultPipeline(projects: ["template-experiment-dls"],
-                   app: "visionary-dls",
-                   moduleOptions: [modules: ["ppu-toolchain"]],
-                   notificationChannel: "#dls-software",
-                   setupOptions: "--dls-version=2",
-                   testSlurmResource: [partition: "dls", gres: "B291656"],
-                   testOptions: "-j1 --test-execall",
-                   testTimeout: 240,
-                   postPipelineCleanup: false,
-                   warningsIgnorePattern: "*/lib-rcf/*")
+try {
+	wafDefaultPipeline(projects: ["template-experiment-dls"],
+	                   app: "visionary-dls",
+	                   moduleOptions: [modules: ["ppu-toolchain"]],
+	                   notificationChannel: "#dls-software",
+	                   setupOptions: "--dls-version=2",
+	                   testSlurmResource: [partition: "dls", gres: "B291656"],
+	                   testOptions: "-j1 --test-execall",
+	                   testTimeout: 240,
+	                   postPipelineCleanup: false,
+	                   warningsIgnorePattern: "*/lib-rcf/*")
 
-runOnSlave(label: "frontend") {
-	publishHTML([allowMissing: false,
-	            alwaysLinkToLastBuild: false,
-	            keepAll: false,
-	            reportDir: 'doc/template-experiment-dls/html/',
-	            reportFiles: 'classes.html',
-	            reportName: 'Source Code Documentation',
-	            reportTitles: ''])
+	runOnSlave(label: "frontend") {
+		publishHTML([allowMissing         : false,
+		             alwaysLinkToLastBuild: false,
+		             keepAll              : false,
+		             reportDir            : 'doc/template-experiment-dls/html/',
+		             reportFiles          : 'classes.html',
+		             reportName           : 'Source Code Documentation',
+		             reportTitles         : ''])
+	}
+} finally {
+	runOnSlave(label: "frontend") {
+		cleanWs()
+	}
 }

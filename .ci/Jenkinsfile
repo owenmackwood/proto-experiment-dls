@@ -9,8 +9,7 @@ try {
 	                   testSlurmResource: [partition: "dls", gres: "B291656", powercycle: ""],
 	                   testOptions: "-j1 --test-execall",
 	                   testTimeout: 240,
-	                   postPipelineCleanup: false,
-	                   warningsIgnorePattern: "*/lib-rcf/*")
+	                   postPipelineCleanup: false)
 
 	runOnSlave(label: "frontend") {
 		publishHTML([allowMissing         : false,

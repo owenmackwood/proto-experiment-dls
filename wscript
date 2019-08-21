@@ -23,7 +23,7 @@ def build(bld):
     bld(
         target = 'nux_includes',
         export_includes = ['src/ppu'],
-        env = bld.all_envs['nux'],
+        env = bld.all_envs['nux_v2'],
     )
 
     bld(
@@ -55,8 +55,8 @@ def build(bld):
         objcopy_bfdname = 'binary',
         target = 'template_HelloWorld.bin',
         source = ['src/ppu/test_project/HelloWorld.cpp'],
-        use = ['nux', 'nux_runtime', 'nux_includes'],
-        env = bld.all_envs['nux'],
+        use = ['nux_v2', 'nux_runtime_v2', 'nux_includes'],
+        env = bld.all_envs['nux_v2'],
     )
 
     bld.program(

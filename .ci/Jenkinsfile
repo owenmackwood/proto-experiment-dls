@@ -5,7 +5,6 @@ try {
 	                   app: "visionary-dls",
 	                   moduleOptions: [modules: ["ppu-toolchain"]],
 	                   notificationChannel: "#dls-software",
-	                   setupOptions: "--dls-version=2",
 	                   testSlurmResource: [partition: "dls", gres: "B291656", powercycle: ""],
 	                   testOptions: "-j1 --test-execall",
 	                   testTimeout: 240,

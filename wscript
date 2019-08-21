@@ -51,20 +51,11 @@ def build(bld):
     )
 
     bld.program(
-        features = 'c objcopy',
-        objcopy_bfdname = 'binary',
-        target = 'template_test.bin',
-        source = 'src/ppu/test_project/test.c',
-        use = ['nux', 'nux_runtime', 'nux_includes'],
-        env = bld.all_envs['nux'],
-    )
-
-    bld.program(
         features = 'cxx objcopy',
         objcopy_bfdname = 'binary',
         target = 'template_HelloWorld.bin',
         source = ['src/ppu/test_project/HelloWorld.cpp'],
-        use = ['nux', 'nux_runtime_cpp', 'nux_includes'],
+        use = ['nux', 'nux_runtime', 'nux_includes'],
         env = bld.all_envs['nux'],
     )
 

@@ -38,7 +38,7 @@ def build(bld):
         relative_trick = True,
         install_from = bld.path.find_node('src/py'),
         install_path = '${PREFIX}/lib',
-        use = ['dlens'],
+        use = ['dlens_v2'],
     )
 
     bld(

@@ -1,6 +1,6 @@
 import unittest
 
-from dlens.v2.halco import NeuronOnDLS
+from dlens_v2.halco import NeuronOnDLS
 
 from test_project import hello_world
 

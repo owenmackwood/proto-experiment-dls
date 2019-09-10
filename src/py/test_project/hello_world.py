@@ -1,6 +1,5 @@
-from dlens import logger
-from dlens.v2 import hal, sta
-from dlens.v2.halco import CommonNeuronParameter, NeuronOnDLS, \
+from dlens_v2 import hal, sta, logger
+from dlens_v2.halco import CommonNeuronParameter, NeuronOnDLS, \
     NeuronParameter, SynapseDriverOnDLS, SynapseOnDLS
 
 

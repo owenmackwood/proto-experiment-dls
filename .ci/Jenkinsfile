@@ -1,26 +1,8 @@
 @Library("jenlib") _
 
-try {
-	wafDefaultPipeline(projects: ["template-experiment-dls"],
-	                   app: "visionary-dls",
-	                   moduleOptions: [modules: ["ppu-toolchain"]],
-	                   notificationChannel: "#dls-software",
-	                   testSlurmResource: [partition: "dls", gres: "B291656", powercycle: ""],
-	                   testOptions: "-j1 --test-execall",
-	                   testTimeout: 240,
-	                   postPipelineCleanup: false)
-
-	runOnSlave(label: "frontend") {
-		publishHTML([allowMissing         : false,
-		             alwaysLinkToLastBuild: false,
-		             keepAll              : false,
-		             reportDir            : 'doc/template-experiment-dls/html/',
-		             reportFiles          : 'classes.html',
-		             reportName           : 'Source Code Documentation',
-		             reportTitles         : ''])
-	}
-} finally {
-	runOnSlave(label: "frontend") {
-		cleanWs()
-	}
-}
+wafDefaultPipeline(projects: ["template-experiment-dls"],
+                   app: "visionary-dls",
+                   moduleOptions: [modules: ["ppu-toolchain"]],
+                   notificationChannel: "#dls-software",
+                   testSlurmResource: [[partition: "cube", wafer: 62, "fpga-without-aout": 3]],
+                   testOptions: "-j1 --test-execall")

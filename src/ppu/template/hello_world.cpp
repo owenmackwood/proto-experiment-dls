@@ -1,6 +1,6 @@
 #include <s2pp.h>
 
-template<int N>
+template <int N>
 class HelloWorld
 {
 public:
@@ -12,6 +12,7 @@ private:
 
 int32_t start(void)
 {
-	__vector uint8_t lhs __attribute__((unused)) = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+	__vector uint8_t lhs
+	    __attribute__((unused)) = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
 	return 0;
 }

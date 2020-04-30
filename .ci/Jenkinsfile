@@ -1,7 +1,7 @@
 @Library("jenlib") _
 
 wafDefaultPipeline(projects: ["template-experiment-dls"],
-                   app: "visionary-dls",
+                   app: "dls",
                    moduleOptions: [modules: ["ppu-toolchain"]],
                    notificationChannel: "#dls-software",
                    testSlurmResource: [[partition: "cube", wafer: 62, "fpga-without-aout": 3]],

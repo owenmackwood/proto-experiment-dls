@@ -42,9 +42,9 @@ waf setup --project=my_experiment
 
 Using the latest [singularity container](https://openproject.bioai.eu/containers/), run
 ```bash
-singularity exec --app visionary-dls /containers/stable/latest waf configure
-singularity exec --app visionary-dls /containers/stable/latest waf build
-singularity exec --app visionary-dls /containers/stable/latest waf install
+singularity exec --app dls /containers/stable/latest waf configure
+singularity exec --app dls /containers/stable/latest waf build
+singularity exec --app dls /containers/stable/latest waf install
 ```
 
 ## Add a CI Job

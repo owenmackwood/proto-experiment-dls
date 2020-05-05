@@ -1,4 +1,4 @@
-from dlens_vx.sta import AutoConnection
+from dlens_vx.hxcomm import ManagedConnection
 
 from template import initialize_experiment
 
@@ -9,6 +9,6 @@ def main(num_initializations: int):
 
     :param num_initializations: Dummy parameter, initialize multiple times
     """
-    with AutoConnection() as connection:
+    with ManagedConnection() as connection:
         for _ in range(num_initializations):
             initialize_experiment(connection)

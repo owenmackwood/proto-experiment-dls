@@ -1,4 +1,4 @@
-from dlens_vx.hxcomm import ManagedConnection
+from dlens_vx_v1.hxcomm import ManagedConnection
 
 from template import initialize_experiment
 

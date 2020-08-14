@@ -1,5 +1,5 @@
-from dlens_vx.sta import generate, ExperimentInit, run
-from dlens_vx.hxcomm import ConnectionHandle
+from dlens_vx_v1.sta import generate, ExperimentInit, run
+from dlens_vx_v1.hxcomm import ConnectionHandle
 
 
 def initialize_experiment(connection: ConnectionHandle):

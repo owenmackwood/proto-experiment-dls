@@ -20,7 +20,7 @@ The name given to this variable needs to correspond to the library folders in
 
 
 def depends(ctx):
-    ctx("haldls")
+    ctx("pynn-brainscales")
     ctx("libnux")
     ctx("code-format")
 
@@ -74,7 +74,7 @@ def build_host_python(bld):
         install_from="src/py",
         pylint_config=join(get_toplevel_path(), "code-format", "pylintrc"),
         pycodestyle_config=join(get_toplevel_path(), "code-format", "pycodestyle"),
-        use=["dlens_vx_v1"])
+        use=["pynn_brainscales2"])
 
     bld(name=f"{EXPERIMENT_NAME}-python_hwtests",
         tests=bld.path.ant_glob("tests/hw/py/**/*.py"),

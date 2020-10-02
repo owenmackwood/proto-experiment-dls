@@ -1,15 +1,14 @@
-from dlens_vx_v1.sta import generate, ExperimentInit, run
-from dlens_vx_v1.hxcomm import ConnectionHandle
+import pynn_brainscales.brainscales2 as pynn
 
 
-def initialize_experiment(connection: ConnectionHandle):
+def get_neuron_population(size: int) -> pynn.Population:
     """
-    Trivial example for an experiment library function.
-
-    :param connection: Connection to be used for initialization
+    Minimal helper function:
+    Construct a neuron population to be used within this experiment.
+    :param size: Population size
+    :return: Neuron population
     """
-    builder, _ = generate(ExperimentInit())
-    run(connection, builder.done())
+    return pynn.Population(size, pynn.cells.HXNeuron)
 
 
 def add(val_a: int, val_b: int) -> int:

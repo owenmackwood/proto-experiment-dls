@@ -16,3 +16,7 @@ def main():
     pynn.Projection(neurons_1, neurons_2, pynn.AllToAllConnector())
     pynn.run(0.2)
     pynn.end()
+
+
+if __name__ == "__main__":
+    main()

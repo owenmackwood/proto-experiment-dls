@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import pynn_brainscales.brainscales2 as pynn
 
 from template import get_neuron_population

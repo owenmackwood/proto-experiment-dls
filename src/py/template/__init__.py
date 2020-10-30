@@ -8,7 +8,7 @@ def get_neuron_population(size: int) -> pynn.Population:
     :param size: Population size
     :return: Neuron population
     """
-    return pynn.Population(size, pynn.cells.HXNeuron)
+    return pynn.Population(size, pynn.cells.HXNeuron())
 
 
 def add(val_a: int, val_b: int) -> int:

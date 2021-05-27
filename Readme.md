@@ -30,7 +30,7 @@ in a single repository.
 1. Commit the changes you've made
 1. Ask the appropriate people for a new repository that will contain your experiment
 1. Push your changes to the new repository
-1. Add your experiment to the [`repo_db.json`](https://openproject.bioai.eu/projects/projects/repository/revisions/master/changes/repo_db.json)
+1. Add your experiment to the [`repo_db.json`](https://gerrit.bioai.eu/plugins/gitiles/projects/+/refs/heads/master/repo_db.json)
 1. Get [*symwaf2ic*](https://github.com/electronicvisions/waf) (on visionary infrastructure, you can `module load waf`)
 1. Create an experiment toplevel and set up your experiment and dependencies
 ```bash

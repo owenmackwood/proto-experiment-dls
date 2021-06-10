@@ -1,4 +1,4 @@
-#include "template/hello_world.hpp"
+#include "protowen/hello_world.hpp"
 
 int main()
 {

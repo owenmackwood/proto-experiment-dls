@@ -1,7 +1,7 @@
 @Library("jenlib") _
 
 Map<String, Object> pipelineOptions = [
-		projects: ["template-experiment-dls"],
+		projects: ["protowen"],
 		moduleOptions: [modules: ["ppu-toolchain"]],
 		container: [app: "dls"],
 		notificationChannel: "#dls-software"

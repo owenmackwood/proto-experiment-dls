@@ -5,7 +5,7 @@ from waflib.extras.symwaf2ic import get_toplevel_path
 from waflib import Utils
 
 
-EXPERIMENT_NAME: str = "proto"
+EXPERIMENT_NAME: str = "protowen"
 """
 Name of this experiment.
 

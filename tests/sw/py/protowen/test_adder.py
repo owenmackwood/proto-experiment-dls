@@ -1,6 +1,6 @@
 import unittest
 
-from template import add
+from protowen import add
 
 
 class TestAdder(unittest.TestCase):

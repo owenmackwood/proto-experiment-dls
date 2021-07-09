@@ -63,7 +63,7 @@ void cadc_sampling_fast(size_t n_samples, size_t offset, bool trigger_reset) {
             "fxvinx %1, %[cadc_trigger_read], %[row_part_0]\n"
             "fxvoutx %1, %[external_base], %[sample_index]\n"
             :
-            : [cadc_trigger_read] "b" (dls_causal_base),
+            : [cadc_trigger_read] "b" (dls_acausal_base),
               [external_base] "b" (dls_extmem_base),
               [row_part_0] "r" (2*row + 0),
               [sample_index] "r" ((n_ppus*offset*n_samples + n_ppus*sample + (n_ppus - 1 - ppu_id)) * 128 / 16)

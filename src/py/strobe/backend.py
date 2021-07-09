@@ -177,8 +177,10 @@ class StrobeBackend:
                 config.multicompartment.connect_right = True
 
         # apply calibration
-        calix.common.cadc.apply_calibration(init_builder, self._cadc_calib)
-        calix.spiking.neuron.apply_calibration(init_builder, self._neuron_calib)
+        self._cadc_calib.apply(init_builder)
+        self._neuron_calib.apply(init_builder)
+        # calix.common.cadc.apply_calibration(init_builder, self._cadc_calib)
+        # calix.spiking.neuron.apply_calibration(init_builder, self._neuron_calib)
 
         config = haldls.CommonNeuronBackendConfig()
         config.clock_scale_fast = 0  # self._neuron_calib.refractory_clock
@@ -215,7 +217,12 @@ class StrobeBackend:
         switch = correlation_switch_quad.ColumnCorrelationSwitch()
         switch.enable_internal_causal = True
         switch.enable_internal_acausal = True
-        switch.enable_cadc_neuron_readout_causal = True
+        """
+        enable_cadc_neuron_readout_causal = True
+        was never strictly needed, and now should not be used because we need the causal readout for the actual
+        synaptic trace
+        """
+        switch.enable_cadc_neuron_readout_causal = False
         switch.enable_cadc_neuron_readout_acausal = True
 
         for switch_coord in halco.iter_all(halco.EntryOnQuad):
@@ -351,7 +358,27 @@ class StrobeBackend:
             builder.write(halco.PPUMemoryWordOnDLS(coordinate, halco.PPUOnDLS(ppu)), haldls.PPUMemoryWord(data))
         return builder
 
+    def _measure_correlation_baseline(self):
+        # measure correlation baseline
+        builder = stadls.PlaybackProgramBuilder()
+        gonzales.reset_correlation(builder)
+        tickets = gonzales.measure_correlation(builder)
+        builder.block_until(halco.BarrierOnFPGA(), haldls.Barrier.omnibus)
+        stadls.run(self._connection, builder.done())
+
+        baseline = np.zeros(
+                (halco.SynapseRowOnDLS.size, halco.NeuronColumnOnDLS.size),
+                dtype=np.int)
+        for ticket_id, ticket in enumerate(tickets):
+            baseline[ticket_id, :] = ticket.get().causal.to_numpy()
+        
+        print(f"Measured causal trace baseline: {baseline.min()} - {baseline.max()}, mean: {np.mean(baseline)}")
+        return baseline
+
+
     def run(self, input_spikes, n_samples=None, duration=None, measure_power=False, trigger_reset=False, record_madc=False):
+        baseline = self._measure_correlation_baseline()
+
         builder = stadls.PlaybackProgramBuilder()
 
         # configure the number of samples to be recorded
@@ -389,6 +416,8 @@ class StrobeBackend:
         event_config.enable_event_recording = True
         builder.write(halco.EventRecordingConfigOnFPGA(), event_config)
 
+        corr_tickets = []
+
         timing_offset = 100e-6
 
         hw_batch_size = len(input_spikes)
@@ -414,6 +443,11 @@ class StrobeBackend:
             labels += self._input_shift
 
             builder.merge_back(self._routing.generate_spike_train(times, labels))
+
+            builder.block_until(halco.BarrierOnFPGA(), haldls.Barrier.omnibus)
+            tickets = gonzales.measure_correlation(builder)
+            gonzales.reset_correlation(builder)
+            corr_tickets.append(tickets)
 
         builder.block_until(
             halco.TimerOnDLS(),
@@ -503,6 +537,23 @@ class StrobeBackend:
         for l in range(len(self.structure) - 1):
             traces.append(cadc_data[:, :, boundaries[l]:boundaries[l + 1]])
 
+        inputs = halco.SynapseRowOnSynram.size
+        ordering = np.argsort(self._routing._lookup)
+        measurement = np.zeros(
+            (halco.SynapseRowOnDLS.size, halco.NeuronColumnOnDLS.size),
+            dtype=np.int)
+        causal_traces = []
+        for tickets in corr_tickets:
+            for ticket_id, ticket in enumerate(tickets):
+                measurement[ticket_id, :] = ticket.get().causal.to_numpy()
+            print(f"Single trial trace: {measurement.min()} - {measurement.max()}, mean: {measurement.mean()}")
+
+            measurement[:inputs, :] = measurement[:inputs, :][ordering, :]
+            measurement[inputs:, :] = measurement[inputs:, :][ordering, :]
+
+            causal_traces.append(baseline - measurement)
+            # causal_traces.append(measurement)
+
         if record_madc:
             samples = program.madc_samples.to_numpy()
             time = samples["chip_time"][10:] / 125 * 1e-6
@@ -510,7 +561,7 @@ class StrobeBackend:
 
             self._madc_samples = np.stack([time, trace]).T
 
-        return spikes, traces, durations
+        return spikes, traces, durations, causal_traces
 
     def load_ppu_program(self, program_path):
         # load PPU program

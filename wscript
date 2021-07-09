@@ -2,7 +2,6 @@ import os
 from os.path import join
 from waflib.extras.test_base import summary
 from waflib.extras.symwaf2ic import get_toplevel_path
-from waflib import Utils
 
 
 EXPERIMENT_NAME: str = "protowen"
@@ -21,8 +20,11 @@ The name given to this variable needs to correspond to the library folders in
 
 
 def depends(ctx):
-    ctx("pynn-brainscales")
+    ctx("haldls")
+    ctx("calix")
     ctx("libnux")
+    # ctx("pyhid")
+    # ctx("tools-kintex7")
     ctx("code-format")
 
 
@@ -53,14 +55,14 @@ def build_host_cpp(bld):
     """
     Waf build targets for C++ code running on the host system.
     """
-    bld(target=f"{EXPERIMENT_NAME}-host_includes",
-        export_includes=["src/cc"])
-
-    bld.program(name=f"{EXPERIMENT_NAME}-host_helloworld",
-                features="cxx cxxprogram",
-                target="hello_world",
-                source=[f"src/cc/{EXPERIMENT_NAME}/hello_world.cpp"],
-                use=[f"{EXPERIMENT_NAME}-host_includes"])
+    bld(
+        target='gonzales',
+        source='src/cc/gonzales/gonzales.cpp',
+        features='cxx cxxshlib pyext pyembed',
+        use=['PYBIND11GONZALES', 'stadls_vx_v2'],
+        install_path='${PREFIX}/lib',
+        linkflags='-Wl,-z,defs',
+    )
 
 
 def build_host_python(bld):
@@ -68,25 +70,12 @@ def build_host_python(bld):
     Waf build targets for python code running on the host system.
     """
     bld(name=f"{EXPERIMENT_NAME}-python_libraries",
-        features="py use pylint pycodestyle",
+        features="py",
         source=bld.path.ant_glob("src/py/**/*.py"),
         relative_trick=True,
         install_path="${PREFIX}/lib",
         install_from="src/py",
-        pylint_config=join(get_toplevel_path(), "code-format", "pylintrc"),
-        pycodestyle_config=join(get_toplevel_path(), "code-format", "pycodestyle"),
-        use=["pynn_brainscales2"])
-
-    bld(name=f"{EXPERIMENT_NAME}-python_scripts",
-        features="py use pylint pycodestyle",
-        source=bld.path.ant_glob(f"src/py/{EXPERIMENT_NAME}/scripts/**/*.py"),
-        relative_trick=True,
-        install_path="${PREFIX}/bin",
-        install_from=f"src/py/{EXPERIMENT_NAME}/scripts",
-        chmod=Utils.O755,
-        pylint_config=join(get_toplevel_path(), "code-format", "pylintrc"),
-        pycodestyle_config=join(get_toplevel_path(), "code-format", "pycodestyle"),
-        use=["pynn_brainscales2", f"{EXPERIMENT_NAME}-python_libraries"])
+        use=["dlens_vx_v2", "calix_pylib"])
 
     bld(name=f"{EXPERIMENT_NAME}-python_hwtests",
         tests=bld.path.ant_glob("tests/hw/py/**/*.py"),
@@ -115,10 +104,11 @@ def build_ppu_cpp(bld):
         export_includes=["src/ppu"],
         env=bld.all_envs["nux_vx"])
 
-    bld.program(name=f"{EXPERIMENT_NAME}-ppu_helloworld",
+    bld.program(name=f"{EXPERIMENT_NAME}-ppu_strobe",
                 features="cxx",
-                target="hello_world.bin",
-                source=[f"src/ppu/{EXPERIMENT_NAME}/hello_world.cpp"],
+                target="strobe.bin",
+                source=[f"src/ppu/strobe/strobe.cpp"],
                 use=["nux_vx", "nux_runtime_vx",
                      f"{EXPERIMENT_NAME}-ppu_includes"],
+                linkflags="-Wl,--defsym=mailbox_size=0",
                 env=bld.all_envs["nux_vx"])

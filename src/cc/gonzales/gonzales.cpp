@@ -9,17 +9,20 @@
 #include <pybind11/numpy.h>
 
 #include "fisch/vx/constants.h"
-#include "fisch/vx/playback_program_builder.h"
 #include "haldls/vx/timer.h"
 #include "haldls/vx/v2/neuron.h"
 #include "stadls/vx/v2/init_generator.h"
 #include "stadls/vx/v2/playback_program.h"
 #include "stadls/vx/v2/playback_program_builder.h"
+#include "lola/vx/v2/cadc.h"
+#include "lola/vx/v2/synapse.h"
+#include "fisch/vx/playback_program_builder.h"
 
 using namespace halco::common;
 using namespace halco::hicann_dls::vx::v2;
 using namespace haldls::vx::v2;
 using namespace stadls::vx::v2;
+using namespace lola::vx::v2;
 
 namespace py = pybind11;
 
@@ -30,7 +33,7 @@ void generate_spiketrain(
 	py::array_t<uint32_t> spl1_addresses
 	) {
 
-	for(size_t i=0; i<times.size(); ++i) {
+	for(ssize_t i=0; i<times.size(); ++i) {
                 builder.wait_until(
 			TimerOnDLS(),
 			Timer::Value(times.at(i) * 1e6 * fisch::vx::fpga_clock_cycles_per_us));
@@ -99,10 +102,26 @@ py::array_t<uint8_t> parse_fpga_memory_u8(fpga_memory_ticket_type const& ticket)
 	return data;
 }
 
+void reset_correlation(PlaybackProgramBuilder& builder) {
+	for(auto row : iter_all<CorrelationResetRowOnDLS>())
+		builder.write(row, CorrelationResetRow());
+}
+
+typedef std::vector<PlaybackProgram::ContainerTicket<CADCSampleRow>> cadc_tickets_type;
+
+cadc_tickets_type measure_correlation(PlaybackProgramBuilder& builder) {
+	cadc_tickets_type tickets;
+	for(auto row : iter_all<CADCSampleRowOnDLS>())
+		tickets.push_back(builder.read(row));
+	return tickets;
+}
+
 PYBIND11_MODULE(gonzales, m) {
 	py::module::import("pystadls_vx_v2");
 	m.def("generate_spiketrain", &generate_spiketrain, "Generate a playback program builder for inserting spikes.");
 	m.def("parse_ppu_memory_u8", &parse_ppu_memory_u8, "Parse PPUMemoryBlock into individual words of type uint8_t.");
 	m.def("parse_fpga_memory_u8", &parse_fpga_memory_u8, "Parse FPGA memoryPPUMemoryBlock into individual words of type uint8_t.");
 	m.def("get_fpga_memory_ticket", &get_fpga_memory_ticket, "Parse FPGA memoryPPUMemoryBlock into individual words of type uint8_t.");
+	m.def("reset_correlation", &reset_correlation, "Reset all correlation rows.");
+	m.def("measure_correlation", &measure_correlation, "Measure correlation for all synapses.");
 }

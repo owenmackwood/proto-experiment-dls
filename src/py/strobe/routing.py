@@ -10,6 +10,7 @@ import gonzales
 
 class RoutingGenerator(stadls.PlaybackGenerator):
     def __init__(self, neuron_size=1, signed_synapses=False):
+        super().__init__()
         self._neuron_size = neuron_size
         self._signed_synapses = signed_synapses
 
@@ -107,6 +108,14 @@ class RoutingGenerator(stadls.PlaybackGenerator):
                     halco.CrossbarOutputOnDLS(o),
                     halco.CrossbarInputOnDLS(8 + (o % 4))
                 )] = active_crossbar_node
+
+        # # enable loopback of input spikes
+        # for o in range(4):
+        #     self.crossbar_nodes[
+        #         halco.CrossbarNodeOnDLS(
+        #             halco.CrossbarOutputOnDLS(8 + o),
+        #             halco.CrossbarInputOnDLS(8 + o)
+        #         )] = active_crossbar_node
 
         # enable spike output
         for i in range(8):
@@ -220,6 +229,7 @@ class RoutingGenerator(stadls.PlaybackGenerator):
         spike_labels = spikes["label"]
 
         event_outputs = (spike_labels >> 8) & 0b11
+        # event_outputs |= (spike_labels >> 14) & 0b11  # needed for loopback
         event_addresses = spike_labels & 0b11111111
 
         sources = self._neuron_lookup[event_addresses, event_outputs]

@@ -23,6 +23,9 @@ args = parser.parse_args()
 #         "membrane_capacitance": 63,
 #         "refractory_time": 2.
 #         }
+ref = np.empty(512)
+ref[:2*243] = 1e-6
+ref[2*243:] = 100e-6
 
 targets = {
         "leak": 80,
@@ -32,12 +35,13 @@ targets = {
         "tau_syn": 6e-6,
         "i_synin_gm": 500,
         "membrane_capacitance": 63,
-        "refractory_time": 2.
+        "refractory_time": ref  # 100e-6  # 2e-6
         }
 
 targets_in_weird_units = targets.copy()
 targets_in_weird_units["tau_mem"] *= 1e6
 targets_in_weird_units["tau_syn"] *= 1e6
+targets_in_weird_units["refractory_time"] *= 1e6
 
 with hxcomm.ManagedConnection() as connection:
     init = stadls.ExperimentInit()

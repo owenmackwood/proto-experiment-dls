@@ -182,17 +182,18 @@ class StrobeBackend:
         # calix.common.cadc.apply_calibration(init_builder, self._cadc_calib)
         # calix.spiking.neuron.apply_calibration(init_builder, self._neuron_calib)
 
-        config = haldls.CommonNeuronBackendConfig()
-        config.clock_scale_fast = 0  # self._neuron_calib.refractory_clock
-        config.clock_scale_slow = 9  # self._neuron_calib.refractory_clock
-        config.clock_scale_adaptation_pulse = 15
-        config.clock_scale_post_pulse = 15
-        config.enable_clocks = True
-        config.enable_event_registers = True
-        for block in range(4):
-            config.set_sample_positive_edge(block, True)
-
         for c in halco.iter_all(halco.CommonNeuronBackendConfigOnDLS):
+            # config = haldls.CommonNeuronBackendConfig()
+            config = self._neuron_calib.cocos[c]
+            #config.clock_scale_fast = self._neuron_calib.refractory_clock
+            #config.clock_scale_slow = self._neuron_calib.refractory_clock
+            config.clock_scale_adaptation_pulse = 15
+            config.clock_scale_post_pulse = 15
+            config.enable_clocks = True
+            config.enable_event_registers = True
+            for block in range(4):
+                config.set_sample_positive_edge(block, True)
+
             init_builder.write(c, config)
 
         stadls.run(self._connection, init_builder.done())
@@ -353,6 +354,105 @@ class StrobeBackend:
         builder.write(halco.SynramOnDLS.bottom, synram_bottom)
         stadls.run(self._connection, builder.done())
 
+    def extract_measurements(self, *weights, measurements):
+        # we from now on assume that we have up to 256 inputs per neuron
+        assert self._neuron_size == 2
+
+        shapes = []
+        for l, layer in enumerate(self.structure[:-1]):
+            next_layer = self.structure[l + 1]
+            if not isinstance(next_layer, LayerSize) or not next_layer.recurrent:
+                shape = (layer, next_layer)
+            else:
+                shape = (layer + next_layer, next_layer)
+            shapes.append(shape)
+
+        """
+        shapes = [
+            (25, 243),
+            (243, 3),
+        ]
+        """
+
+        weights_unrolled = np.zeros((256, 256), dtype=int)
+        offsets_unrolled = np.zeros((256, 256), dtype=int)
+
+        boundaries = np.hstack([np.zeros(1, dtype=int), np.array(self.structure[1:]).cumsum()])
+        """
+        boundaries = [0, 243, 246]
+        """
+
+        split_measurements = []
+
+        assert len(weights) == len(shapes)
+        for l, (shape, w, layer) in enumerate(zip(shapes, weights, self.structure[1:])):
+            """
+            shape, w, layer = (25, 243), array(25, 243), 243
+            shape, w, layer = (243, 3), array(243, 3), 3
+            """
+            if shape != w.shape:
+                msg = f"Shape of weights for layer {layer} is not compatible with the layer specification."
+                raise IndexError(msg)
+
+            recurrent = isinstance(layer, LayerSize) and layer.recurrent
+            if recurrent:
+                a = boundaries[l]
+                b = boundaries[l + 1]
+                offset = 0
+
+                c = boundaries[l]
+                d = boundaries[l + 1]
+                weights_unrolled[a:b, c:d] = w[a - b:, :]
+                offsets_unrolled[a:b, c:d] = offset
+
+            # non-reccurent weights
+            if l == 0:
+                a = self._input_shift + 0
+                b = self._input_shift + self.structure[0]
+                offset = 1
+            else:
+                a = boundaries[l - 1]
+                b = boundaries[l]
+                offset = 0
+
+            c = boundaries[l]
+            d = boundaries[l + 1]
+            """
+            self._input_shift = 0
+
+            l = 0
+            a, b = 0, 25
+            c, d = 0, 243
+            offset = 1
+            
+            a, b = 0, 243
+            c, d = 243, 246
+            offset = 0
+            """
+            weights_unrolled[a:b, c:d] = w[0:b - a, :]
+            offsets_unrolled[a:b, c:d] = offset
+
+            m = measurements[a:b, c:d].copy()
+            split_measurements.append(m)
+
+        """
+        Next, the weights_unrolled and offsets_unrolled are dumped into (2, 128, 256) arrays, with offsets having (1 << 5) added to them.
+        A call to transform_weights results in synram_top, synram_bottom being returned.
+
+        It starts by computing a shape = (2, 128, 256) and verifies that the weights and sources arrays have that shape.
+
+        Then it swaps the first two axes, resulting in (128, 2, 256), then reshapes it into (128, 512) with Fortran ordering
+        """
+
+        
+        return split_measurements
+
+
+    def transform_measurements(self, weights, sources, measurements):
+
+        return
+        
+
     def _signal_ppus(self, builder, coordinate, data):
         for ppu in range(self._n_vectors):
             builder.write(halco.PPUMemoryWordOnDLS(coordinate, halco.PPUOnDLS(ppu)), haldls.PPUMemoryWord(data))
@@ -372,7 +472,7 @@ class StrobeBackend:
         for ticket_id, ticket in enumerate(tickets):
             baseline[ticket_id, :] = ticket.get().causal.to_numpy()
         
-        print(f"Measured causal trace baseline: {baseline.min()} - {baseline.max()}, mean: {np.mean(baseline)}")
+        # print(f"Measured causal trace baseline: {baseline.min()} - {baseline.max()}, mean: {np.mean(baseline)}")
         return baseline
 
 
@@ -443,6 +543,11 @@ class StrobeBackend:
             labels += self._input_shift
 
             builder.merge_back(self._routing.generate_spike_train(times, labels))
+
+            # Need to block so that PPU can finish reading out membrane potentials
+            builder.block_until(
+                halco.TimerOnDLS(),
+                int((timing_offset + self.sample_separation * b + 50e-6) * 1e6 * fisch.fpga_clock_cycles_per_us))
 
             builder.block_until(halco.BarrierOnFPGA(), haldls.Barrier.omnibus)
             tickets = gonzales.measure_correlation(builder)
@@ -543,15 +648,19 @@ class StrobeBackend:
             (halco.SynapseRowOnDLS.size, halco.NeuronColumnOnDLS.size),
             dtype=np.int)
         causal_traces = []
-        for tickets in corr_tickets:
+        for sample_idx, tickets in enumerate(corr_tickets):
+            b_begin = sample_idx * self.sample_separation
+            last_ticket = int(tickets[-1].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
+            # print(f"Since sample start: {last_ticket - b_begin:.3e}")
+
             for ticket_id, ticket in enumerate(tickets):
                 measurement[ticket_id, :] = ticket.get().causal.to_numpy()
-            print(f"Single trial trace: {measurement.min()} - {measurement.max()}, mean: {measurement.mean()}")
 
             measurement[:inputs, :] = measurement[:inputs, :][ordering, :]
             measurement[inputs:, :] = measurement[inputs:, :][ordering, :]
-
-            causal_traces.append(baseline - measurement)
+            measurement -= baseline
+            # print(f"Single trial trace: {measurement.min()} - {measurement.max()}, mean: {measurement.mean()}")
+            causal_traces.append(measurement)
             # causal_traces.append(measurement)
 
         if record_madc:

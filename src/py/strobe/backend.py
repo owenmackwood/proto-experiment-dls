@@ -68,12 +68,13 @@ FPGA_MEMORY_SIZE = 131072  # bytes
 
 
 class StrobeBackend:
-    def __init__(self, connection, structure=[256, 118, 10], calibration=None, synapse_bias=1000, sample_separation=500e-6):
+    def __init__(self, connection, structure=[256, 118, 10], calibration=None, synapse_bias=1000, sample_separation=500e-6, measure_correlation=False):
         self._connection = connection
         self.structure = structure
 
         self.synapse_bias = synapse_bias
         self.sample_separation = sample_separation
+        self._measure_correlation = measure_correlation
 
         # check if first layer is recurrent
         first_recurrent = isinstance(self.structure[1], LayerSize) and self.structure[1].recurrent
@@ -159,11 +160,14 @@ class StrobeBackend:
             source = int(c.toEnum()) // self._neuron_size
             population = (source >= boundaries).sum() - 1
             compartment = int(c.toEnum()) % self._neuron_size
+            # print(f"{source=} {population=} {compartment=} {spiking[population]=}")
             if compartment == 0:
                 if spiking[population]:
                     config.threshold.enable = True
                 else:
                     config.threshold.enable = False
+                    # Was used during diagnosis of why outputs were spiking
+                    # config.event_routing.analog_output = lola.AtomicNeuron.EventRouting.AnalogOutputMode.off
                 config.multicompartment.connect_right = True
 
                 config.readout.enable_amplifier = True
@@ -173,8 +177,17 @@ class StrobeBackend:
                 config.leak.enable_division = True
                 config.readout.enable_amplifier = False
                 config.threshold.enable = False
+                # Was used during diagnosis of why outputs were spiking
+                # config.event_routing.analog_output = lola.AtomicNeuron.EventRouting.AnalogOutputMode.off
             if compartment != (self._neuron_size - 1):
                 config.multicompartment.connect_right = True
+
+            # config.threshold.enable = False
+            # config.event_routing.analog_output = lola.AtomicNeuron.EventRouting.AnalogOutputMode.off
+
+        # for c in halco.iter_all(halco.AtomicNeuronOnDLS):
+        #     config = self._neuron_calib.neurons[c]
+        #     print(c, config)
 
         # apply calibration
         self._cadc_calib.apply(init_builder)
@@ -477,7 +490,8 @@ class StrobeBackend:
 
 
     def run(self, input_spikes, n_samples=None, duration=None, measure_power=False, trigger_reset=False, record_madc=False):
-        baseline = self._measure_correlation_baseline()
+        if self._measure_correlation:
+            baseline = self._measure_correlation_baseline()
 
         builder = stadls.PlaybackProgramBuilder()
 
@@ -549,10 +563,11 @@ class StrobeBackend:
                 halco.TimerOnDLS(),
                 int((timing_offset + self.sample_separation * b + 50e-6) * 1e6 * fisch.fpga_clock_cycles_per_us))
 
-            builder.block_until(halco.BarrierOnFPGA(), haldls.Barrier.omnibus)
-            tickets = gonzales.measure_correlation(builder)
-            gonzales.reset_correlation(builder)
-            corr_tickets.append(tickets)
+            if self._measure_correlation:
+                builder.block_until(halco.BarrierOnFPGA(), haldls.Barrier.omnibus)
+                tickets = gonzales.measure_correlation(builder)
+                gonzales.reset_correlation(builder)
+                corr_tickets.append(tickets)
 
         builder.block_until(
             halco.TimerOnDLS(),
@@ -642,26 +657,27 @@ class StrobeBackend:
         for l in range(len(self.structure) - 1):
             traces.append(cadc_data[:, :, boundaries[l]:boundaries[l + 1]])
 
-        inputs = halco.SynapseRowOnSynram.size
-        ordering = np.argsort(self._routing._lookup)
-        measurement = np.zeros(
-            (halco.SynapseRowOnDLS.size, halco.NeuronColumnOnDLS.size),
-            dtype=np.int)
         causal_traces = []
-        for sample_idx, tickets in enumerate(corr_tickets):
-            b_begin = sample_idx * self.sample_separation
-            last_ticket = int(tickets[-1].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
-            # print(f"Since sample start: {last_ticket - b_begin:.3e}")
+        if self._measure_correlation:
+            inputs = halco.SynapseRowOnSynram.size
+            ordering = np.argsort(self._routing._lookup)
+            measurement = np.zeros(
+                (halco.SynapseRowOnDLS.size, halco.NeuronColumnOnDLS.size),
+                dtype=np.int)
+            for sample_idx, tickets in enumerate(corr_tickets):
+                b_begin = sample_idx * self.sample_separation
+                # last_ticket = int(tickets[-1].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
+                # print(f"Since sample start: {last_ticket - b_begin:.3e}")
 
-            for ticket_id, ticket in enumerate(tickets):
-                measurement[ticket_id, :] = ticket.get().causal.to_numpy()
+                for ticket_id, ticket in enumerate(tickets):
+                    measurement[ticket_id, :] = ticket.get().causal.to_numpy()
 
-            measurement[:inputs, :] = measurement[:inputs, :][ordering, :]
-            measurement[inputs:, :] = measurement[inputs:, :][ordering, :]
-            measurement -= baseline
-            # print(f"Single trial trace: {measurement.min()} - {measurement.max()}, mean: {measurement.mean()}")
-            causal_traces.append(measurement)
-            # causal_traces.append(measurement)
+                measurement[:inputs, :] = measurement[:inputs, :][ordering, :]
+                measurement[inputs:, :] = measurement[inputs:, :][ordering, :]
+                measurement -= baseline
+                # print(f"Single trial trace: {measurement.min()} - {measurement.max()}, mean: {measurement.mean()}")
+                causal_traces.append(measurement)
+                # causal_traces.append(measurement)
 
         if record_madc:
             samples = program.madc_samples.to_numpy()

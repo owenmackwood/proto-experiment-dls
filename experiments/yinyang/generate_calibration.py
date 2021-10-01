@@ -23,9 +23,9 @@ args = parser.parse_args()
 #         "membrane_capacitance": 63,
 #         "refractory_time": 2.
 #         }
-ref = np.empty(512)
-ref[:2*243] = 1e-6
-ref[2*243:] = 100e-6
+# ref = np.empty(512)
+# ref[:2*243] = 1e-6
+# ref[2*243:] = 1e-7
 
 targets = {
         "leak": 80,
@@ -35,7 +35,7 @@ targets = {
         "tau_syn": 6e-6,
         "i_synin_gm": 500,
         "membrane_capacitance": 63,
-        "refractory_time": ref  # 100e-6  # 2e-6
+        "refractory_time": 2e-6,  #ref  # 100e-6  # 2e-6
         }
 
 targets_in_weird_units = targets.copy()

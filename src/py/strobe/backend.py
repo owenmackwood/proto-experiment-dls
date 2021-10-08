@@ -86,9 +86,9 @@ class StrobeBackend:
 
         self.max_hw_batch_size = 40
 
-        calib = np.load(calibration, allow_pickle=True)
-        self._cadc_calib = calib["cadc"].item()
-        self._neuron_calib = calib["neuron"].item()
+        # calib = np.load(calibration, allow_pickle=True)
+        self._cadc_calib = calibration["cadc"]
+        self._neuron_calib = calibration["neuron"]
 
         # this is kinda fixed for the model, we keep it here only for the sake of completeness
         self._neuron_size = 2

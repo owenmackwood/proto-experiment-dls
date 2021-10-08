@@ -9,13 +9,36 @@ import time
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from numba import njit
-from strobe.backend import StrobeBackend, LayerSize
+import argparse
 
 n_input: int = 5
 n_hidden: int = 243
 n_output: int = 3
 
-input_repetitions: int = 5
+calibration_file = Path.home() / "calibrations.npz"
+targets = {
+    "leak": 80,
+    "reset": 80,
+    "threshold": 150,
+    "tau_mem": 6e-6,
+    "tau_syn": 6e-6,
+    "i_synin_gm": 500,
+    "membrane_capacitance": 63,
+    "refractory_time": 2e-6
+}
+
+class Classifier(Enum):
+    first_spike = 1
+    spike_count = 2
+    potential = 3
+
+record_madc = False
+
+synapse_bias: int = 1000
+reset_cadc_each_sample: bool = True
+
+# weight_scale: float = 4 * 240.  # 1000.  # 
+# scale = 2.5 * 240. * 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
 interpolation: int = 1
 
 # parameters for hardware execution
@@ -26,58 +49,68 @@ trace_scale = 1 / 0.33
 # alignment of traces and spikes from chip
 spike_shift = 1.7e-6 / interpolation
 
-class Classifier(Enum):
-    first_spike = 1
-    spike_count = 2
-    potential = 3
-
-classifier = Classifier.spike_count
-
-record_madc = False
-
-calibration: str = "cube_69_singlespike_output.npz" if classifier == Classifier.first_spike else "cube_69_2e-6.npz"
-synapse_bias: int = 1000
-sample_separation: float = 10e-3  # Refractory time is 100e-6!
-inference_mode: bool = False
-
-# weight_scale: float = 4 * 240.  # 1000.  # 
-scale = 2.5 * 240. * 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
-
-structure: List[Union[int, LayerSize]] = [
-    n_input * input_repetitions,
-    LayerSize(n_hidden, spiking=True),
-    LayerSize(n_output, spiking=True),
-]
-
 seed = 2
-n_samples = 25
+n_samples = 1
 n_steps = n_samples * interpolation
 
 batch_size = 100
 train_size = batch_size*50
 test_size = batch_size*20
 
-tau_stdp = 6e-6
-eta = 3e-1 if classifier == Classifier.first_spike else 1e-1
-epochs = 40
+epochs = 50
 lr_step_size = 10
 lr_factor = 0
 
-spike_target_hidden = (batch_size / n_output / 2) if classifier == Classifier.first_spike else (batch_size)
-spike_target_output = (batch_size / n_output) if classifier == Classifier.first_spike else (batch_size)
-gamma0 = 0.1
-lambda0 = 0.1
+classifier = Classifier.spike_count
+r0_absolute = True
 use_r1_reg = True
+direct_reg = False  # Bypass ADAM for the regularizer
+hw_scale = 240.
+w_max = 63 / hw_scale
+scale = 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
 
-# TODO: Change mean weights to 0, let regularizer handle spikes. Didn't seem to work, regularizer took too long?
-w_hidden_mean = 0.  # 1e-3, # 
-w_output_mean = 0.
+if classifier == Classifier.first_spike:
+    r_small = 0.1
+    # calibration: str = "cube_69_singlespike_output.npz"
+    # scale = 2.5 * 240. * 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
+    w_hidden_mean = 0.  # 1e-3, # 
+    w_output_mean = 0.
+    input_repetitions: int = 5
+
+    spike_target_hidden = 1 / n_output / 2
+    spike_target_output = 1 / n_output
+    eta = 3e-1 
+    gamma0 = 0.1  # Min spikes regularization
+    lambda0 = 0.1  # Firing rate regularization
+    targets["refractory_time"] = {0: 1e-6, 2*243: 100e-6}
+
+elif classifier == Classifier.spike_count:
+    r_small = .1
+
+    input_repetitions: int = 5
+    # scale = input_repetitions / 2 * 240. * 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
+    # input_repetitions: int = 5
+    w_hidden_mean = 15. / hw_scale
+    w_output_mean = 5. / hw_scale
+
+    spike_target_hidden = 1 / n_output
+    spike_target_output = 1
+    eta = 1.5e-3  # TODO: Try increasing time between samples, and lower maximum/min! synapse value
+    gamma0 = 1e-2  # Min spikes regularization
+    lambda0 = 1e-2  # Firing rate regularization
+    targets["tau_mem"] = 6e-6
+    targets["tau_syn"] = 6e-6
+    targets["refractory_time"] = 0.04e-6
+
+else:
+    assert False, f"{classifier} not yet implemented"
+
+r_big = r_small*5
+sample_separation: float = 2e-6*r_big*200.  # 10e-3  # Refractory time is 100e-6!
+tau_stdp = targets["tau_syn"]
+
 
 tb_str = f"_e{epochs}_bs{batch_size}_tr_{train_size}_eta{eta:.0e}_fac{lr_factor}_step{lr_step_size}_tau{tau_stdp*1e6:.1f}us_input_{input_repetitions}x"
-
-
-# TODO: waf setup --project=calix --project=pynn-brainscales --update-branches=force
-# calibration bugfix:  changeset 13234
 
 
 def main():
@@ -85,7 +118,8 @@ def main():
     from functools import partial
     import shutil
     from strobe.datasets.yinyang import YinYangDataset
-    from strobe.backend import FPGA_MEMORY_SIZE, StrobeBackend
+    from strobe.backend import FPGA_MEMORY_SIZE, StrobeBackend, LayerSize
+    from calibrate import get_wafer_calibration
 
     # import torch
     # from dlens_vx_v2 import logger
@@ -102,6 +136,8 @@ def main():
 
     log_dir = Path.home()/tb_root/f"{time.strftime('%Y-%m-%d-%Hh%Mm%Ss')}{tb_str}"
 
+    calibration = get_wafer_calibration(calibration_file, wafer, fpga, targets)
+
     with hxcomm.ManagedConnection() as connection, SummaryWriter(log_dir) as tb:
 
         shutil.copy(__file__, log_dir)
@@ -113,30 +149,29 @@ def main():
             size=(n_input * input_repetitions, n_hidden), 
             loc=w_hidden_mean,
             scale=scale / np.sqrt(n_input * input_repetitions)
-            )
+        )
 
         weights_output = np.random.normal(
             size=(n_hidden, n_output), 
             loc=w_output_mean,
-            scale=2*scale / np.sqrt(n_hidden)
-            )
+            scale=scale / np.sqrt(n_hidden)
+        )
 
-        weight_layers: List[np.ndarray] = [
-            weights_hidden,
-            weights_output,
+        weight_layers: List[np.ndarray] = [weights_hidden, weights_output]
+
+        structure: List[Union[int, LayerSize]] = [
+            n_input * input_repetitions,
+            LayerSize(n_hidden, spiking=True),
+            LayerSize(n_output, spiking=True),
         ]
 
-        backend = StrobeBackend(
-            connection, structure, calibration, synapse_bias, sample_separation
-            )
+        backend = StrobeBackend(connection, structure, calibration, synapse_bias, sample_separation)
         backend.configure()
 
         # backend.load_ppu_program(Path(__file__).parent / "../../bin/strobe.bin")
         backend.load_ppu_program(f'{Path.home()/"workspace/bin/strobe.bin"}')
 
         # load data set
-        r_big = 0.5
-        r_small = 0.1
         data_train = YinYangDataset(r_small, r_big, size=train_size, seed=seed)
         data_test = YinYangDataset(r_small, r_big, size=test_size, seed=seed+1)
 
@@ -166,18 +201,9 @@ def main():
             backend_str = f"(Backend: {t_backend_train:.1f} sec training, {t_backend_test:.1f} sec testing)"
             print(f"Time {t_epoch:.1f} sec {backend_str} Traces: {t_traces:.3f}, Weight updates: {t_weight_update:.3f} sec")
 
-        # save_path = Path("~/data").expanduser()
-        # save_path.mkdir(exist_ok=True)
-        # np.savez(save_path / "input_spikes", *all_inputs)
-        # np.savez(save_path / "membranes", *traces)
-        # for l, layer in enumerate(neuron_layers):
-        #     np.savez(save_path / f"spikes_layer{l}", *spikes[l])
-        # np.savez(save_path / "causal_traces", *causal_traces)
-        # np.savez(save_path / "computed_traces", traces_hidden=traces_hidden, traces_output=traces_output)
-
 
 def forward(
-        backend: StrobeBackend,
+        backend,
         tb: SummaryWriter,
         weight_layers: List[np.ndarray],
         m_output: np.ndarray,
@@ -201,16 +227,30 @@ def forward(
     hw_batch_bounds = np.arange(0, batch_size, hw_batch_size)
 
     weights_hidden, weights_output = weight_layers
-    np.clip(weights_hidden, -63, 63, out=weights_hidden)
-    np.clip(weights_output, -63, 63, out=weights_output)
+    np.clip(weights_hidden, -w_max, w_max, out=weights_hidden)
+    np.clip(weights_output, -w_max, w_max, out=weights_output)
 
-    weight_bins = np.linspace(-63.001, 63.001, 10*63)
+    weight_bins = np.linspace(-hw_scale*w_max*1.01, hw_scale*w_max*1.01, 10*63)
     prob_bins = np.linspace(0., 1., 40)
-    tau_bins = np.linspace(0., 5e6 * (time_step + spike_shift), 40)
+    tau_bins = np.linspace(0., sample_separation*1e6, 100)
 
     in_ds = np.zeros((dataset_size, n_input))
     y_hat_ds = np.zeros((dataset_size, n_output))
     class_estimate_ds = np.zeros(dataset_size, dtype=int)
+
+    if r0_absolute:
+        def regularizer_min_spikes(weights, spikes, target):
+            sp = spikes.mean(axis=0) >= target
+            sp = np.vstack(weights.shape[0] * [sp])
+            return np.where(sp, 0, -gamma0 * np.abs(weights))            
+    else:
+        def regularizer_min_spikes(weights, spikes, target):
+            sp = spikes.mean(axis=0) >= target
+            sp = np.vstack(weights.shape[0] * [sp])
+            return np.where(sp, 0, -gamma0)  
+
+    def regularizer_rate(weights, spikes):
+        return lambda0 * weights * np.power(spikes, 2).mean(axis=0)[None, :]
 
     for batch_idx, (batch_x, batch_y) in enumerate(data_loader):
 
@@ -243,19 +283,19 @@ def forward(
             input_spikes.append(np.vstack([times[order], labels[order]]).T)
             in_all[b, :] = times
 
-        backend.write_weights(*weight_layers)
+        backend.write_weights(*[w*hw_scale for w in weight_layers])
 
         no_outputs = 0
-        min_hidden = 10*9
-        for s in [slice(i, min(batch_size + 1, i + hw_batch_size)) for i in hw_batch_bounds]:
+        min_hidden, max_hidden = 10*9, 0
+        for s in [slice(i, min(batch_size, i + hw_batch_size)) for i in hw_batch_bounds]:
             # batch_durations = np.zeros((batch_size, 2))
             t_start_b = time.time()
-            for trial in range(5):
+            for _ in range(5):
                 spikes, membrane_traces, durations, causal_traces = backend.run(
-                        input_spikes[s.start:s.stop],
+                        input_spikes[s],
                         n_samples=n_steps // interpolation,
                         record_madc=record_madc,
-                        trigger_reset=inference_mode)
+                        trigger_reset=reset_cadc_each_sample)
                 # batch_durations[:] = np.array(durations)
                 if not (np.array(durations) > 85200).any():
                     # print("Success!")
@@ -268,7 +308,7 @@ def forward(
             if update_weights:
                 t_start_trace = time.time()
                 compute_traces(
-                        in_all[s.start:s.stop, :], spikes, hw_batch_size, traces_hidden[s, ...], traces_output[s, ...]
+                        in_all[s, :], spikes, hw_batch_size, traces_hidden[s, ...], traces_output[s, ...]
                     )
                 t_traces += time.time() - t_start_trace
 
@@ -284,6 +324,7 @@ def forward(
                 output_spikes.append(1e6*spikes_output)
                 no_outputs += spikes_output.size == 0
                 min_hidden = min(min_hidden, units_hidden.size)
+                max_hidden = max(max_hidden, units_hidden.size)
                 
                 tau_k, nu = compute_tau(units_output, spikes_output)
                 tau_all[s.start+b, :] = tau_k
@@ -295,62 +336,64 @@ def forward(
         class_estimate[:] = np.argmax(y_hat, axis=1)
         no_pref = np.logical_and(np.isclose(y_hat[:, 0], y_hat[:, 1]), np.isclose(y_hat[:, 0], y_hat[:, 2]))
         class_estimate[no_pref] = 3
+        n_valid = batch_size - no_pref.sum()
 
         n_correct = (c_all == class_estimate).sum()
         accuracy = n_correct / batch_size
+        adjusted_accuracy = n_correct / max(n_valid, 1)
 
         # cosine_similarity = np.einsum("bi,bi->b", y_hat, y_all)
 
         # Add small constant to y_hat to avoid numerical problems in computing the cross entropy.
-        cross_entropy = -np.sum(y_all * np.log(y_hat + 1e-32), axis=1)
+        cross_entropy = -np.sum(y_all * np.log(y_hat + np.finfo(np.float64).eps), axis=1)
         mean_loss = cross_entropy.mean()
         if no_outputs:
-            print(f"No output spikes: {no_outputs}, min hidden: {min_hidden}")
-        print(f"Batch: {batch_idx+1}/{num_batches}, Accuracy: {accuracy:.2f}, Loss: {mean_loss:.3f}")  # ", CS: {[f'{v:.3e}' for v in cs]}")
+            print(f"No output spikes: {no_outputs}, hidden spikes: {min_hidden} - {max_hidden}")
+        print(f"Batch: {batch_idx+1}/{num_batches}, Accuracy: {accuracy:.2f} ({adjusted_accuracy:.2f}), Loss: {mean_loss:.3f}")
 
         if update_weights:
             t_start_w = time.time()
-            # weights_rounded = np.round(weights_output)
-            dw_out = (traces_output * err[:, None, :]).sum(axis=0)  # (batch_size, n_hidden, n_output) * (batch_size, n_output) -> (n_hidden, n_output)
-            wt = (weights_output/63)[None, ...] * traces_output  # shape=(batch_size, n_hidden, n_output)
+
+            dw_out = (traces_output * err[:, None, :]).mean(axis=0)  # (batch_size, n_hidden, n_output) * (batch_size, n_output) -> (n_hidden, n_output)
+            wt = weights_output[None, ...] * traces_output  # shape=(batch_size, n_hidden, n_output)
             bpe = np.einsum("bij,bj->bi", wt, err)  # (batch_size, n_hidden, n_output) (batch_size, n_output) -> (batch_size, n_hidden)
-            dw_hidden = (traces_hidden * bpe[:, None, :]).sum(axis=0)  # (batch_size, n_input, n_hidden) (batch_size, n_hidden) -> (n_input, n_hidden)
+            dw_hidden = (traces_hidden * bpe[:, None, :]).mean(axis=0)  # (batch_size, n_input, n_hidden) (batch_size, n_hidden) -> (n_input, n_hidden)
             dw_hidden = np.vstack(input_repetitions*[dw_hidden])
-            dw_out /= batch_size
-            dw_hidden /= batch_size
 
-            def regularizer_min_spikes(weights, spikes, target):
-                sp = spikes.sum(axis=0) >= target
-                sp = np.vstack(weights.shape[0] * [sp])
-                return np.where(sp, 0, -gamma0/63 * np.abs(weights))
-
-            def regularizer_rate(weights, spikes):
-                return (1/63) * weights * np.vstack(weights.shape[0] * [lambda0 * np.power(spikes, 2).sum(axis=0)])
-            
             r0_hidden = regularizer_min_spikes(weights_hidden, spikes_per_hidden, spike_target_hidden)
             r0_output = regularizer_min_spikes(weights_output, spikes_per_output, spike_target_output)
             mean_r0_hidden = r0_hidden.mean()
             mean_r0_output = r0_output.mean()
-            dw_hidden += r0_hidden
-            dw_out += r0_output
 
             if use_r1_reg:
                 r1_hidden = regularizer_rate(weights_hidden, spikes_per_hidden)
                 r1_output = regularizer_rate(weights_output, spikes_per_output)
-                dw_hidden += r1_hidden
-                dw_out += r1_output
                 mean_r1_hidden = r1_hidden.mean()
                 mean_r1_output = r1_output.mean()
+            
+            if not direct_reg:
+                dw_hidden += r0_hidden
+                dw_out += r0_output
+                if use_r1_reg:
+                    dw_hidden += r1_hidden
+                    dw_out += r1_output
 
             adam_update(eta, weights_hidden, m_hidden, v_hidden, dw_hidden, epoch)
             eta_hat = adam_update(eta, weights_output, m_output, v_output, dw_out, epoch)
+
+            if direct_reg:
+                weights_hidden -= eta_hat * r0_hidden
+                weights_output -= eta_hat * r0_output
+                if use_r1_reg:
+                    weights_hidden -= eta_hat * r1_hidden
+                    weights_output -= eta_hat * r1_output
 
             t_weight_update += time.time() - t_start_w
 
             assert np.all(np.isfinite(weights_hidden)), "Non-finite hidden weights"
             assert np.all(np.isfinite(weights_output)), "Non-finite output weights"
-            np.clip(weights_hidden, -63, 63, out=weights_hidden)
-            np.clip(weights_output, -63, 63, out=weights_output)
+            np.clip(weights_hidden, -w_max, w_max, out=weights_hidden)
+            np.clip(weights_output, -w_max, w_max, out=weights_output)
             hidden_spikes = np.hstack(hidden_spikes)
             output_spikes = np.hstack(output_spikes)
 
@@ -361,6 +404,7 @@ def forward(
                 cls_accuracy = (class_estimate[cls_at] == cls).sum() / cls_at.sum()
                 tb.add_scalar(f"accuracy/class_{data_loader.dataset.class_names[cls]}", cls_accuracy, tb_i)
             tb.add_scalar("accuracy/combined", accuracy, tb_i)
+            tb.add_scalar("accuracy/combined_adjusted", adjusted_accuracy, tb_i)
             tb.add_scalar("Loss", mean_loss, tb_i)
 
             tb.add_histogram("class/probability", y_hat, tb_i, bins=prob_bins)
@@ -374,8 +418,10 @@ def forward(
                 tb.add_histogram("output/spike_latency", output_spikes, tb_i, bins=tau_bins)
             tb.add_histogram("hidden/spike_counts", spikes_per_hidden, tb_i)
             tb.add_histogram("output/spike_counts", spikes_per_output, tb_i)
-            tb.add_histogram("hidden/weights", weights_hidden, tb_i, bins=weight_bins)
-            tb.add_histogram("output/weights", weights_output, tb_i, bins=weight_bins)
+            tb.add_histogram("hidden/total_spikes", spikes_per_hidden.sum(axis=1), tb_i)
+            tb.add_histogram("output/total_spikes", spikes_per_output.sum(axis=1), tb_i)
+            tb.add_histogram("hidden/weights", weights_hidden * hw_scale, tb_i, bins=weight_bins)
+            tb.add_histogram("output/weights", weights_output * hw_scale, tb_i, bins=weight_bins)
 
             tb.add_scalar("Learning rate", eta_hat, tb_i)
             tb.add_scalar("reg/spikes_hidden", mean_r0_hidden, tb_i)
@@ -398,6 +444,7 @@ def forward(
                 tb.add_scalar(f"test/class_{data_loader.dataset.class_names[cls]}", cls_accuracy, epoch)
             
             tb.add_scalar("test/combined", accuracy, epoch)
+            tb.add_scalar("test/combined_adjusted", adjusted_accuracy, epoch)
             tb.add_scalar("test/Loss", mean_loss, epoch)
 
     if not update_weights:
@@ -420,6 +467,49 @@ def forward(
         tb.add_figure("test_classes", fig_t, epoch)
         tb.add_figure("test_images", fig, epoch)
     return t_backend, t_traces, t_weight_update
+
+
+class StepLR:
+    """Decays the learning rate of each parameter group by gamma every
+    step_size epochs. Notice that such decay can happen simultaneously with
+    other changes to the learning rate from outside this scheduler. When
+    last_epoch=-1, sets initial lr as lr.
+
+    Args:
+        optimizer (Optimizer): Wrapped optimizer.
+        step_size (int): Period of learning rate decay.
+        gamma (float): Multiplicative factor of learning rate decay.
+            Default: 0.1.
+        last_epoch (int): The index of last epoch. Default: -1.
+        verbose (bool): If ``True``, prints a message to stdout for
+            each update. Default: ``False``.
+
+    Example:
+        >>> # Assuming optimizer uses lr = 0.05 for all groups
+        >>> # lr = 0.05     if epoch < 30
+        >>> # lr = 0.005    if 30 <= epoch < 60
+        >>> # lr = 0.0005   if 60 <= epoch < 90
+        >>> # ...
+        >>> scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+        >>> for epoch in range(100):
+        >>>     train(...)
+        >>>     validate(...)
+        >>>     scheduler.step()
+    """
+
+    def __init__(self, step_size, gamma=0.1):
+        self.step_size = step_size
+        self.gamma = gamma
+
+    def get_lr(self):
+        if (self.last_epoch == 0) or (self.last_epoch % self.step_size != 0):
+            return [group['lr'] for group in self.optimizer.param_groups]
+        return [group['lr'] * self.gamma
+                for group in self.optimizer.param_groups]
+
+    def _get_closed_form_lr(self):
+        return [base_lr * self.gamma ** (self.last_epoch // self.step_size)
+                for base_lr in self.base_lrs]
 
 
 def adam_update(eta, w, m, v, dw, epoch):
@@ -540,5 +630,25 @@ else:
         assert False, f"Class estimator not defined for {classifier!s}"
 
 
+wafer: int = 69
+fpga: int = 3
+
+
+def parse_arguments():
+    global wafer, fpga
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-w", "--wafer", help="The wafer to run on.", type=int, default=wafer
+    )
+    parser.add_argument(
+        "-f", "--fpga", help="The desired FPGA.", type=int, default=fpga
+    )
+    args = parser.parse_args()
+
+    wafer = args.wafer
+    fpga = args.fpga
+
+
 if __name__ == "__main__":
+    parse_arguments()
     main()

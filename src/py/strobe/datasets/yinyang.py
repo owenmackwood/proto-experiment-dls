@@ -12,15 +12,23 @@ class YinYangDataset(Dataset):
         self.__vals = []
         self.__cs = []
         self.class_names = ['yin', 'yang', 'dot']
-        for i in range(size):
+
+        # goal_classes = np.random.randint(3, size=size)
+        # for cls in range(2):
+        #     cls_idx = np.argwhere(goal_classes == cls)
+        #     n_class = cls_idx.size
+        #     phi = np.random.uniform(-np.pi, np.pi, n_class)
+        #     rho = np.random.uniform(-r_big, r_big, n_class)
+        #     x, y = rho * np.cos(phi), rho * np.sin(phi)
+
+        for goal_class in np.random.randint(3, size=size):
             # keep num of class instances balanced by using rejection sampling
             # choose class for this sample
-            goal_class = np.random.randint(3)
-            x, y, c = self.get_sample(goal=goal_class)
+            x, y, c = self.get_sample(goal_class)
             # add mirrod axis values
-            x_flipped = 1. - x
-            y_flipped = 1. - y
-            val = np.array([x, y, x_flipped, y_flipped, 0.45])
+            x_flipped = 2*r_big - x
+            y_flipped = 2*r_big - y
+            val = np.array([x, y, x_flipped, y_flipped, 0.9*r_big])
             self.__vals.append(val)
             self.__cs.append(c)
 

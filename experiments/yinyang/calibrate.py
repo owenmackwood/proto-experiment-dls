@@ -74,10 +74,11 @@ def calibrate(
     calibration = wafer_calibrations.setdefault(wf_target_key, {})
 
     if len(calibration):
-        print(f"Existing calibration found: {calibration}")
-    elif not prompt or input(
-            f"Calibration for the chosen targets on w{wafer}f{fpga} not found. Run the calibration? [yes/NO] "
-        ).lower() == "yes":
+        prompt_str = f"Existing calibration found: {calibration}. Re-run calibration?"
+    else:
+        prompt_str = f"Calibration for the chosen targets on w{wafer}f{fpga} not found. Run the calibration?"
+
+    if not prompt or input(f"{prompt_str} [yes/NO] ").lower() == "yes":
         import pystadls_vx_v2 as stadls
         import pyhxcomm_vx as hxcomm
         import calix.common
@@ -123,9 +124,9 @@ def targets_to_calibrate(targets: Targets, neurons: int, convert_to_us: bool):
             bounds = tuple(v.keys())
             values = tuple(v.values())
             for b0, b1, val in zip(bounds[:-1], bounds[1:], values[:-1]):
-                print(f"{k}[{b0}:{b1}] = {val:e}")
+                print(f"{k}[{b0}:{b1}] = {val:.2e}")
                 va[b0 : b1] = val
-            print(f"{k}[{bounds[-1]}:] = {values[-1]:e}")
+            print(f"{k}[{bounds[-1]}:] = {values[-1]:.2e}")
             va[bounds[-1]:] = values[-1]
             targets[k] = va
         if np.any(targets[k] < 1e-3):
@@ -150,22 +151,26 @@ def parse_arguments():
         "-t", "--target", help="Module containg `targets` and `calibration_file`", type=str
     )
     parser.add_argument(
-        "-n", "--prompt", help="Prompt before proceeding with the calibration.", 
+        "-n", "--no_prompt", help="Proceed with the calibration without user input (even if calibration already exists).", 
         action="store_true", default=False,
     )
     return parser.parse_args()
 
 
-args = parse_arguments()
 if __name__ == "__main__":
     import importlib
 
+    args = parse_arguments()
+    assert isinstance(args.wafer, int), "You must provide a wafer number"
+    assert isinstance(args.fpga, int), "You must provide an FPGA number"
+    assert isinstance(args.target, str), "You must provide the name of a module that contains target values"
+
     mod = importlib.import_module(args.target)
 
-    print(f"{args.wafer=} {args.fpga=} {args.target=} {args.prompt=} {mod.calibration_file=!s}")
+    print(f"{args.wafer=} {args.fpga=} {args.target=} {args.no_prompt=} {mod.calibration_file=!s}")
     calibrate(
         mod.calibration_file,
         args.wafer, args.fpga, 
         mod.targets, 
-        512, args.prompt, True
+        512, not args.no_prompt, True
     )

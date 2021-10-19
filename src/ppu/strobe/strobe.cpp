@@ -39,6 +39,7 @@ inline void reset() {
         :
     );
    
+    // asm volatile("sync");
     sleep_cycles(550);
    
     asm volatile(
@@ -81,22 +82,22 @@ int start(void) {
 
     while(command != HALT){
         if(command == RESET_BATCH) {
-	    batch_offset = 0;
-	}
-	else if(command == RUN) {
+	        batch_offset = 0;
+        }
+        else if(command == RUN) {
             command = NONE;
             start = get_time_base();
-	    cadc_sampling_fast(n_samples, batch_offset, false);
-	    batch_offset++;
+            cadc_sampling_fast(n_samples, batch_offset, false);
+            batch_offset++;
             duration = get_time_base() - start;
         }
-	else if(command == RUN_AND_RESET) {
+        else if(command == RUN_AND_RESET) {
             command = NONE;
             start = get_time_base();
-	    cadc_sampling_fast(n_samples, batch_offset, true);
-	    batch_offset++;
+            cadc_sampling_fast(n_samples, batch_offset, true);
+            batch_offset++;
             duration = get_time_base() - start;
-	}
+        }
     }
     
     return 0;

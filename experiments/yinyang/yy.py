@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import matplotlib.cm as cm
-from typing import Callable, List, Union, Dict, Tuple
+from typing import Callable, List, NamedTuple, Union, Tuple
 from pathlib import Path
 from enum import Enum
 import time
@@ -32,17 +32,40 @@ class Classifier(Enum):
     spike_count = 2
     potential = 3
 
+
+class HyperParams(NamedTuple):
+    r_big: float
+    r_small: float
+    gamma0: float
+    lamda0: float
+    batch_size: int
+    train_size: int
+    test_size: int
+    epochs: int
+    eta: float
+    lr_step_size: int
+    lr_factor: float
+    regularize_per_sample: bool
+    input_repetitions: int
+    w_hidden_mean: float
+    w_output_mean: float
+    spike_target_hidden: float
+    spike_target_output: float
+    refractory_hidden: float
+    refractory_output: float
+    softmax_start: float
+    softmax_end: float
+
+
 record_madc = False
 
 synapse_bias: int = 1000
-reset_cadc_each_sample: bool = True
 
 # weight_scale: float = 4 * 240.  # 1000.  # 
 # scale = 2.5 * 240. * 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
 interpolation: int = 1
 
 # parameters for hardware execution
-time_step = 1.7e-6 / interpolation
 trace_offset = 0.38
 trace_scale = 1 / 0.33
 
@@ -50,70 +73,96 @@ trace_scale = 1 / 0.33
 spike_shift = 1.7e-6 / interpolation
 
 seed = 2
-n_samples = 1
-n_steps = n_samples * interpolation
 
 batch_size = 100
 train_size = batch_size*50
 test_size = batch_size*20
 
-epochs = 50
-lr_step_size = 10
-lr_factor = 0
+epochs = 2
+lr_step_size = 5
+lr_factor = 1
 
-classifier = Classifier.spike_count
-r0_absolute = True
+classifier = Classifier.first_spike
+regularize_per_sample = True
 use_r1_reg = True
-direct_reg = False  # Bypass ADAM for the regularizer
+r1_power = 2
 hw_scale = 240.
 w_max = 63 / hw_scale
 scale = 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
+r_small = 2.
+r_big = r_small*5
 
+print_multispike_warning = True
 if classifier == Classifier.first_spike:
-    r_small = 0.1
-    # calibration: str = "cube_69_singlespike_output.npz"
-    # scale = 2.5 * 240. * 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
-    w_hidden_mean = 0.  # 1e-3, # 
-    w_output_mean = 0.
-    input_repetitions: int = 5
-
-    spike_target_hidden = 1 / n_output / 2
-    spike_target_output = 1 / n_output
-    eta = 3e-1 
-    gamma0 = 0.1  # Min spikes regularization
-    lambda0 = 0.1  # Firing rate regularization
-    targets["refractory_time"] = {0: 1e-6, 2*243: 100e-6}
-
-elif classifier == Classifier.spike_count:
-    r_small = .1
-
-    input_repetitions: int = 5
-    # scale = input_repetitions / 2 * 240. * 0.7 * (1.0 - np.exp(-1.7e-6/6e-6))
-    # input_repetitions: int = 5
-    w_hidden_mean = 15. / hw_scale
+    input_repetitions: int = 25
+    w_hidden_mean = 30. / hw_scale
     w_output_mean = 5. / hw_scale
 
     spike_target_hidden = 1 / n_output
     spike_target_output = 1
-    eta = 1.5e-3  # TODO: Try increasing time between samples, and lower maximum/min! synapse value
-    gamma0 = 1e-2  # Min spikes regularization
-    lambda0 = 1e-2  # Firing rate regularization
-    targets["tau_mem"] = 6e-6
-    targets["tau_syn"] = 6e-6
-    targets["refractory_time"] = 0.04e-6
+    eta = 1.5e-3
+    gamma0 = 1e-1  # Min spikes regularization
+    lambda0 = 1e-3  # Firing rate regularization
+    softmax_start = 1.
+    softmax_end = 10.
+
+    refractory_output = 20e-6  #  
+    refractory_hidden = 1e-6
+    targets["refractory_time"] = {
+        0: refractory_hidden,
+        2*n_hidden: refractory_output
+    }
+
+elif classifier == Classifier.spike_count:
+    input_repetitions: int = 25
+    w_hidden_mean = 30. / hw_scale
+    w_output_mean = 5. / hw_scale
+
+    spike_target_hidden = 1 / n_output
+    spike_target_output = 1
+    eta = 1.5e-3
+    gamma0 = 1e-2  # 3e-3 ~(1/n_output)/batch_size  # Min spikes regularization
+    lambda0 = 1e-4  # 1e-4  # Firing rate regularization
+    softmax_start = softmax_end = -2.
+
+    targets["refractory_time"] = refractory_output = refractory_hidden = 0.04e-6
 
 else:
     assert False, f"{classifier} not yet implemented"
 
-r_big = r_small*5
-sample_separation: float = 2e-6*r_big*200.  # 10e-3  # Refractory time is 100e-6!
+reset_cadc_each_sample: bool = False
+max_refractory: float = max(refractory_output, refractory_hidden)
+sample_separation: float = max_refractory
+input_shift: float = spike_shift
+
+if reset_cadc_each_sample:
+    input_shift += max_refractory
+    sample_separation += input_shift + 2e-6*r_big * 2.
+    n_samples = int(np.ceil(sample_separation / spike_shift))
+else:
+    sample_separation += input_shift + 2e-6*r_big * 10.
+    n_samples = 1
+
+n_steps = n_samples * interpolation
+
+print(f"{input_shift=:.3e} {sample_separation=:.3e} {n_samples=}")
+
 tau_stdp = targets["tau_syn"]
 
+hp = HyperParams(
+    r_big, r_small, gamma0, lambda0,
+    batch_size, train_size, test_size, epochs,
+    eta, lr_step_size, lr_factor, regularize_per_sample,
+    input_repetitions, w_hidden_mean, w_output_mean,
+    spike_target_hidden, spike_target_output,
+    refractory_hidden, refractory_output,
+    softmax_start, softmax_end,
+)
 
 tb_str = f"_e{epochs}_bs{batch_size}_tr_{train_size}_eta{eta:.0e}_fac{lr_factor}_step{lr_step_size}_tau{tau_stdp*1e6:.1f}us_input_{input_repetitions}x"
 
 
-def main():
+def main(wafer: int, fpga: int, log_dir: Path):
     import pyhxcomm_vx as hxcomm
     from functools import partial
     import shutil
@@ -127,20 +176,23 @@ def main():
     # logger.set_loglevel(logger_fisch, logger.LogLevel.DEBUG)
     # logger.default_config(level=logger.LogLevel.DEBUG)
     # logger.append_to_file("all.log")
-    if classifier == Classifier.first_spike:
-        tb_root = "tboards_first"
-    elif classifier == Classifier.spike_count:
-        tb_root = "tboards_count"
-    else:
-        tb_root = "tboards_potential"
 
-    log_dir = Path.home()/tb_root/f"{time.strftime('%Y-%m-%d-%Hh%Mm%Ss')}{tb_str}"
+    # if classifier == Classifier.first_spike:
+    #     tb_root = "tboards_first"
+    # elif classifier == Classifier.spike_count:
+    #     tb_root = "tboards_count"
+    # else:
+    #     tb_root = "tboards_potential"
+
+    # log_dir = Path.home()/tb_root/f"{time.strftime('%Y-%m-%d-%Hh%Mm%Ss')}{tb_str}"
+    # return
 
     calibration = get_wafer_calibration(calibration_file, wafer, fpga, targets)
 
-    with hxcomm.ManagedConnection() as connection, SummaryWriter(log_dir) as tb:
+    with hxcomm.ManagedConnection() as connection, SummaryWriterHp(log_dir) as tb:
 
         shutil.copy(__file__, log_dir)
+        tb.add_text("hparams", f"{hp}")
 
         # fix seed
         np.random.seed(seed)
@@ -200,6 +252,8 @@ def main():
             t_epoch = time.time() - t_start_e
             backend_str = f"(Backend: {t_backend_train:.1f} sec training, {t_backend_test:.1f} sec testing)"
             print(f"Time {t_epoch:.1f} sec {backend_str} Traces: {t_traces:.3f}, Weight updates: {t_weight_update:.3f} sec")
+        
+        tb.flush()
 
 
 def forward(
@@ -232,25 +286,36 @@ def forward(
 
     weight_bins = np.linspace(-hw_scale*w_max*1.01, hw_scale*w_max*1.01, 10*63)
     prob_bins = np.linspace(0., 1., 40)
-    tau_bins = np.linspace(0., sample_separation*1e6, 100)
+    tau_upper = sample_separation*1e6
+    tau_bins = np.linspace(0., tau_upper, np.int32(np.ceil(tau_upper/r_small)))
 
     in_ds = np.zeros((dataset_size, n_input))
     y_hat_ds = np.zeros((dataset_size, n_output))
     class_estimate_ds = np.zeros(dataset_size, dtype=int)
+    class_ds = np.zeros(dataset_size, dtype=int)
+    spikes_per_output_ds = np.zeros((dataset_size, n_output), dtype=int)
 
-    if r0_absolute:
+    if regularize_per_sample:
         def regularizer_min_spikes(weights, spikes, target):
-            sp = spikes.mean(axis=0) >= target
-            sp = np.vstack(weights.shape[0] * [sp])
-            return np.where(sp, 0, -gamma0 * np.abs(weights))            
+            sp = spikes >= target  # (batch_size, n_post)
+            sp = np.stack(weights.shape[0] * [sp], axis=1)
+            return np.where(sp, 0, (-gamma0 * np.abs(weights))[None, ...])
+        
+        def regularizer_rate(weights, spikes):
+            sqr = np.power(spikes, 2)  # (batch_size, n_post)
+            sqr = np.stack(weights.shape[0] * [sqr], axis=1)
+            return lambda0 * weights[None, ...] * sqr
     else:
         def regularizer_min_spikes(weights, spikes, target):
             sp = spikes.mean(axis=0) >= target
             sp = np.vstack(weights.shape[0] * [sp])
-            return np.where(sp, 0, -gamma0)  
+            return np.where(sp, 0, -gamma0 * np.abs(weights))            
 
-    def regularizer_rate(weights, spikes):
-        return lambda0 * weights * np.power(spikes, 2).mean(axis=0)[None, :]
+        def regularizer_rate(weights, spikes):
+            # 1/N sum x_i^2, 1/N (sum x_i)^2, (1/N sum x_i)^2 = 1/N^2 (sum x_i)^2
+            # return lambda0 * weights * np.power(spikes, r1_power).mean(axis=0)[None, :]
+            # return lambda0 * weights * np.power(spikes.sum(axis=0), r1_power)/spikes.shape[0][None, :]
+            return lambda0 * weights * np.power(spikes.mean(axis=0), r1_power)[None, :]
 
     for batch_idx, (batch_x, batch_y) in enumerate(data_loader):
 
@@ -262,31 +327,28 @@ def forward(
         in_all = in_ds[batch_slice, :]
         y_hat = y_hat_ds[batch_slice, :]
         class_estimate = class_estimate_ds[batch_slice]
+        c_all = class_ds[batch_slice]
         y_all = np.zeros((batch_size, n_output))
-        c_all = np.zeros(batch_size, dtype=int)
-        tau_all = np.zeros((batch_size, n_output))
 
         traces_hidden = np.zeros((batch_size, n_input, n_hidden))
         traces_output = np.zeros((batch_size, n_hidden, n_output))
         spikes_per_hidden = np.zeros((batch_size, n_hidden))
-        spikes_per_output = np.zeros((batch_size, n_output))
+        spikes_per_output = spikes_per_output_ds[batch_slice, :]
 
         labels = np.arange(n_input) + 256
+        batch_x *= 1e-6
+        c_all[:] =  batch_y
+        y_all[np.arange(batch_size), batch_y] = 1
+
         for b in range(batch_size):
-            x = batch_x[b, :]
-            y = batch_y[b]
-            # x, y = data_train[b + epoch*b]
-            c_all[b] = y
-            y_all[b, y] = 1
-            times = x * time_step + spike_shift
+            times = batch_x[b, :]
+            in_all[b, :] = times
+            times += input_shift
             order = np.argsort(times)
             input_spikes.append(np.vstack([times[order], labels[order]]).T)
-            in_all[b, :] = times
 
         backend.write_weights(*[w*hw_scale for w in weight_layers])
 
-        no_outputs = 0
-        min_hidden, max_hidden = 10*9, 0
         for s in [slice(i, min(batch_size, i + hw_batch_size)) for i in hw_batch_bounds]:
             # batch_durations = np.zeros((batch_size, 2))
             t_start_b = time.time()
@@ -305,38 +367,42 @@ def forward(
                     pass
             t_backend += time.time() - t_start_b
 
+            times_hidden = [b_tu[:, 0] - input_shift for b_tu in spikes[0]]
+            units_hidden = [b_tu[:, 1].astype(int) for b_tu in spikes[0]]
+            times_output = [b_tu[:, 0] - input_shift for b_tu in spikes[1]]
+            units_output = [b_tu[:, 1].astype(int) for b_tu in spikes[1]]
+
             if update_weights:
                 t_start_trace = time.time()
                 compute_traces(
-                        in_all[s, :], spikes, hw_batch_size, traces_hidden[s, ...], traces_output[s, ...]
-                    )
+                    in_all[s, :], 
+                    units_hidden, times_hidden, units_output, times_output, 
+                    hw_batch_size, 
+                    traces_hidden[s, ...], traces_output[s, ...]
+                )
                 t_traces += time.time() - t_start_trace
 
             for b in range(s.stop - s.start):
-                spikes_output = spikes[1][b][:, 0] - spike_shift
-                spikes_hidden = spikes[0][b][:, 0] - spike_shift
-                units_output = spikes[1][b][:, 1].astype(int)
-                units_hidden = spikes[0][b][:, 1].astype(int)
-                np.add.at(spikes_per_output[s.start+b, :], units_output, 1)
-                np.add.at(spikes_per_hidden[s.start+b, :], units_hidden, 1)
+                np.add.at(spikes_per_output[s.start+b, :], units_output[b], 1)
+                np.add.at(spikes_per_hidden[s.start+b, :], units_hidden[b], 1)
 
-                hidden_spikes.append(1e6*spikes_hidden)
-                output_spikes.append(1e6*spikes_output)
-                no_outputs += spikes_output.size == 0
-                min_hidden = min(min_hidden, units_hidden.size)
-                max_hidden = max(max_hidden, units_hidden.size)
+                hidden_spikes.append(1e6*times_hidden[b])
+                output_spikes.append(1e6*times_output[b])
                 
-                tau_k, nu = compute_tau(units_output, spikes_output)
-                tau_all[s.start+b, :] = tau_k
+                tau_k = compute_tau(units_output[b], times_output[b])
                 y_hat[s.start+b, :] = activation_tau(tau_k, nu(epoch, epochs))
 
 
         err = y_hat - y_all  # shape=(batch_size, n_output)
 
         class_estimate[:] = np.argmax(y_hat, axis=1)
-        no_pref = np.logical_and(np.isclose(y_hat[:, 0], y_hat[:, 1]), np.isclose(y_hat[:, 0], y_hat[:, 2]))
+        no_pref = np.logical_and(
+            np.isclose(y_hat[:, 0], y_hat[:, 1]), 
+            np.isclose(y_hat[:, 0], y_hat[:, 2])
+        )
         class_estimate[no_pref] = 3
-        n_valid = batch_size - no_pref.sum()
+        n_no_pref = no_pref.sum()
+        n_valid = batch_size - n_no_pref
 
         n_correct = (c_all == class_estimate).sum()
         accuracy = n_correct / batch_size
@@ -347,46 +413,56 @@ def forward(
         # Add small constant to y_hat to avoid numerical problems in computing the cross entropy.
         cross_entropy = -np.sum(y_all * np.log(y_hat + np.finfo(np.float64).eps), axis=1)
         mean_loss = cross_entropy.mean()
+
+        total_spikes_hidden = spikes_per_hidden.sum(axis=1)
+        total_spikes_output = spikes_per_output.sum(axis=1)
+        where_no_outputs = total_spikes_output == 0
+        no_outputs = where_no_outputs.sum()
+        
         if no_outputs:
-            print(f"No output spikes: {no_outputs}, hidden spikes: {min_hidden} - {max_hidden}")
-        print(f"Batch: {batch_idx+1}/{num_batches}, Accuracy: {accuracy:.2f} ({adjusted_accuracy:.2f}), Loss: {mean_loss:.3f}")
+            tsh_no_outputs = total_spikes_hidden[where_no_outputs]
+            min_hidden, max_hidden = tsh_no_outputs.min(), tsh_no_outputs.max()
+            no_str = f"[No output spikes: {no_outputs}, hidden spikes: {min_hidden} - {max_hidden}]"
+        else:
+            no_str = ""
+        print(f"Batch: {batch_idx+1}/{num_batches}, Accuracy: {accuracy:.2f} ({adjusted_accuracy:.2f}), Loss: {mean_loss:.3f} {no_str}")
 
         if update_weights:
             t_start_w = time.time()
 
-            dw_out = (traces_output * err[:, None, :]).mean(axis=0)  # (batch_size, n_hidden, n_output) * (batch_size, n_output) -> (n_hidden, n_output)
+            dw_out = (traces_output * err[:, None, :])  # (batch_size, n_hidden, n_output) * (batch_size, n_output) -> (n_hidden, n_output)
             wt = weights_output[None, ...] * traces_output  # shape=(batch_size, n_hidden, n_output)
             bpe = np.einsum("bij,bj->bi", wt, err)  # (batch_size, n_hidden, n_output) (batch_size, n_output) -> (batch_size, n_hidden)
-            dw_hidden = (traces_hidden * bpe[:, None, :]).mean(axis=0)  # (batch_size, n_input, n_hidden) (batch_size, n_hidden) -> (n_input, n_hidden)
-            dw_hidden = np.vstack(input_repetitions*[dw_hidden])
+            dw_hidden = (traces_hidden * bpe[:, None, :])  # (batch_size, n_input, n_hidden) (batch_size, n_hidden) -> (n_input, n_hidden)
+            
+            if regularize_per_sample:
+                dw_hidden = np.concatenate(input_repetitions*[dw_hidden], axis=1)
+            else:
+                dw_out = dw_out.mean(axis=0)
+                dw_hidden = dw_hidden.mean(axis=0)
+                dw_hidden = np.vstack(input_repetitions*[dw_hidden])
 
             r0_hidden = regularizer_min_spikes(weights_hidden, spikes_per_hidden, spike_target_hidden)
             r0_output = regularizer_min_spikes(weights_output, spikes_per_output, spike_target_output)
             mean_r0_hidden = r0_hidden.mean()
             mean_r0_output = r0_output.mean()
-
+            dw_hidden += r0_hidden
+            dw_out += r0_output
+            
             if use_r1_reg:
                 r1_hidden = regularizer_rate(weights_hidden, spikes_per_hidden)
                 r1_output = regularizer_rate(weights_output, spikes_per_output)
                 mean_r1_hidden = r1_hidden.mean()
                 mean_r1_output = r1_output.mean()
-            
-            if not direct_reg:
-                dw_hidden += r0_hidden
-                dw_out += r0_output
-                if use_r1_reg:
-                    dw_hidden += r1_hidden
-                    dw_out += r1_output
+                dw_hidden += r1_hidden
+                dw_out += r1_output
+
+            if regularize_per_sample:
+                dw_out = dw_out.mean(axis=0)
+                dw_hidden = dw_hidden.mean(axis=0)
 
             adam_update(eta, weights_hidden, m_hidden, v_hidden, dw_hidden, epoch)
             eta_hat = adam_update(eta, weights_output, m_output, v_output, dw_out, epoch)
-
-            if direct_reg:
-                weights_hidden -= eta_hat * r0_hidden
-                weights_output -= eta_hat * r0_output
-                if use_r1_reg:
-                    weights_hidden -= eta_hat * r1_hidden
-                    weights_output -= eta_hat * r1_output
 
             t_weight_update += time.time() - t_start_w
 
@@ -411,15 +487,15 @@ def forward(
             tb.add_histogram("class/cross_entropy", cross_entropy, tb_i)
             tb.add_histogram("class_id/estimate", class_estimate, tb_i)
             tb.add_histogram("class_id/true", c_all, tb_i)
-            # tb.add_histogram("output/spike_latency", np.where(np.isfinite(tau_all), tau_all, tau_bins[-1]), tb_i, bins=tau_bins)
+            tb.add_histogram("hidden/input_latency", in_all*1e6, tb_i, bins=tau_bins)
             if hidden_spikes.size:
                 tb.add_histogram("hidden/spike_latency", hidden_spikes, tb_i, bins=tau_bins)
             if output_spikes.size:
                 tb.add_histogram("output/spike_latency", output_spikes, tb_i, bins=tau_bins)
             tb.add_histogram("hidden/spike_counts", spikes_per_hidden, tb_i)
             tb.add_histogram("output/spike_counts", spikes_per_output, tb_i)
-            tb.add_histogram("hidden/total_spikes", spikes_per_hidden.sum(axis=1), tb_i)
-            tb.add_histogram("output/total_spikes", spikes_per_output.sum(axis=1), tb_i)
+            tb.add_histogram("hidden/total_spikes", total_spikes_hidden, tb_i)
+            tb.add_histogram("output/total_spikes", total_spikes_output, tb_i)
             tb.add_histogram("hidden/weights", weights_hidden * hw_scale, tb_i, bins=weight_bins)
             tb.add_histogram("output/weights", weights_output * hw_scale, tb_i, bins=weight_bins)
 
@@ -447,6 +523,19 @@ def forward(
             tb.add_scalar("test/combined_adjusted", adjusted_accuracy, epoch)
             tb.add_scalar("test/Loss", mean_loss, epoch)
 
+            # tb.add_hparams(
+            #     hp,
+            #     {
+            #         "hp/loss": mean_loss, 
+            #         "hp/accuracy": accuracy,
+            #         "hp/accuracy_adjusted": adjusted_accuracy,
+            #         "hp/no_output_spikes": no_outputs / batch_size,
+            #     }
+            # )
+
+    t_max = 2e-6*r_big
+    assert in_ds.max() <= t_max  and in_ds.min() >= 0., f"{t_max:.2e} {in_ds.max():.3e} {in_ds.min():.3e}"
+
     if not update_weights:
         fig = plt.figure()
         gs = GridSpec(1, 1, left=0, right=1, bottom=0, top=1)
@@ -466,6 +555,43 @@ def forward(
         
         tb.add_figure("test_classes", fig_t, epoch)
         tb.add_figure("test_images", fig, epoch)
+
+        total_output_spikes = spikes_per_output_ds.sum(axis=1)
+        eq_spikes_loc = np.logical_and(
+            spikes_per_output_ds[:, 0] == spikes_per_output_ds[:, 1],
+            spikes_per_output_ds[:, 1] == spikes_per_output_ds[:, 2]
+        )
+        multi_eq_loc = np.logical_and(eq_spikes_loc, total_output_spikes > 0)
+        
+        ax_lim = (-.5e-6, r_big*2e-6 + .5e-6)
+        scatter_args = dict(
+            xticks=(), yticks=(),
+            xlim=ax_lim, ylim=ax_lim,
+        )
+        if multi_eq_loc.sum():
+            fig = plt.figure()
+            gs = GridSpec(1, 1)#, left=0, right=1, bottom=0, top=1)
+            ax = fig.add_subplot(gs[0])
+            ax.set(**scatter_args)
+            for cls in range(n_output):
+                input_cls = in_ds[np.logical_and(multi_eq_loc, class_ds == cls), :]
+                ax.scatter(input_cls[:, 0], input_cls[:, 1], color=("r", "g", "b")[cls])
+            tb.add_figure("eq/with_spikes", fig, epoch)
+
+        no_spikes_loc = total_output_spikes == 0
+        if no_spikes_loc.sum():
+            fig = plt.figure()
+            gs = GridSpec(1, 1)#, left=0, right=1, bottom=0, top=1)
+            ax = fig.add_subplot(gs[0])
+            ax.set(**scatter_args)
+            for cls in range(n_output):
+                in_class = class_ds == cls
+                no_spikes_cls = np.logical_and(no_spikes_loc, in_class)
+                tb.add_scalar(f"no_spikes/{data_loader.dataset.class_names[cls]}", no_spikes_cls.sum() / in_class.sum(), epoch)
+                input_no_spikes = in_ds[no_spikes_cls, :]
+                ax.scatter(input_no_spikes[:, 0], input_no_spikes[:, 1], color=("r", "g", "b")[cls])
+            tb.add_figure("eq/no_spikes", fig, epoch)
+
     return t_backend, t_traces, t_weight_update
 
 
@@ -571,34 +697,36 @@ def compute_trace(
 
 
 def compute_traces(
-    all_inputs, spikes, batch_size, traces_hidden, traces_output
+    all_inputs, 
+    units_hidden, times_hidden, units_output, times_output ,
+    batch_size, traces_hidden, traces_output
 ):
     all_inputs = all_inputs.copy()
     for b in range(batch_size):
         units_input = np.arange(n_input)
         spike_times_input = all_inputs[b, :]
-        spike_times_hidden = spikes[0][b][:, 0] - spike_shift
-        units_hidden = spikes[0][b][:, 1].astype(int)
-        spike_times_output = spikes[1][b][:, 0] - spike_shift
-        units_output = spikes[1][b][:, 1].astype(int)
+        times_hidden_b = times_hidden[b].copy()
+        units_hidden_b = units_hidden[b].copy()
+        times_output_b = times_output[b].copy()
+        units_output_b = units_output[b].copy()
 
         for units, times in (
                 (units_input, spike_times_input),
-                (units_hidden, spike_times_hidden), 
-                (units_output, spike_times_output),
+                (units_hidden_b, times_hidden_b), 
+                (units_output_b, times_output_b),
             ):
             idx_order = np.argsort(times)
             times[:] = times[idx_order]
             units[:] = units[idx_order]
 
         compute_trace(
-            spike_times_input, spike_times_hidden,
-            units_input, units_hidden,
+            spike_times_input, times_hidden_b,
+            units_input, units_hidden_b,
             traces_hidden[b, ...]
         )
         compute_trace(
-            spike_times_hidden, spike_times_output,
-            units_hidden, units_output,
+            times_hidden_b, times_output_b,
+            units_hidden_b, units_output_b,
             traces_output[b, ...]
         )
         # print(f"{b} Hidden trace max: {traces_hidden.max()} non-zero: {np.sum(traces_hidden>0)}, spikes {units_hidden.size}")
@@ -606,49 +734,74 @@ def compute_traces(
     return traces_hidden, traces_output
 
 
+def nu(epoch, epochs):
+    return softmax_start + (softmax_end - softmax_start) * (epoch / epochs)
+
+
 if classifier == Classifier.first_spike:
-    def compute_tau(units_output, spikes_output) -> Tuple[np.ndarray, Callable]:
+    def compute_tau(units_output, spikes_output) -> np.ndarray:
         tau_k = np.zeros(n_output)
         tau_k[:] = np.infty
         tau_k[units_output] = spikes_output
         for o in range(n_output):
             if (units_output == o).sum() > 1:
-                print(f"Output unit {o} produced more than one spike! {units_output} {spikes_output}")
+                if print_multispike_warning:
+                    print(f"Output unit {o} produced more than one spike! {units_output} {spikes_output}")
                 tau_k[o] = np.min(spikes_output[units_output == o])
 
         tau_k *= 1e6  # Bring usec values into .1-1 sec range
-        return tau_k, lambda epoch, epochs: 1. + 9.*(epoch / epochs)  # Softmax sharpness
+        return tau_k
 
 elif classifier == Classifier.spike_count:
-    def compute_tau(units_output, _) -> Tuple[np.ndarray, Callable]:
+    def compute_tau(units_output, _) ->np.ndarray:
         tau_k = np.zeros(n_output)
         np.add.at(tau_k, units_output, 1)
-        return tau_k, lambda _, __: -2.
+        return tau_k
 
 else:
-    def compute_tau(tau_k, units_output, spikes_output) -> Tuple[np.ndarray, Callable]:
+    def compute_tau(tau_k, units_output, spikes_output) -> np.ndarray:
         assert False, f"Class estimator not defined for {classifier!s}"
 
 
-wafer: int = 69
-fpga: int = 3
+class SummaryWriterHp(SummaryWriter):
+    def add_hparams(
+        self, hparam_dict, metric_dict, hparam_domain_discrete=None, run_name=None
+    ):
+        from torch.utils.tensorboard.summary import hparams
+
+        torch._C._log_api_usage_once("tensorboard.logging.add_hparams")
+        if type(hparam_dict) is not dict or type(metric_dict) is not dict:
+            raise TypeError('hparam_dict and metric_dict should be dictionary.')
+        exp, ssi, sei = hparams(hparam_dict, metric_dict, hparam_domain_discrete)
+        
+        self.file_writer.add_summary(exp)
+        self.file_writer.add_summary(ssi)
+        self.file_writer.add_summary(sei)
+        for k, v in metric_dict.items():
+            self.add_scalar(k, v)
+
 
 
 def parse_arguments():
-    global wafer, fpga
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-w", "--wafer", help="The wafer to run on.", type=int, default=wafer
+        "-w", "--wafer", help="The wafer to run on.", type=int, default=69
     )
     parser.add_argument(
-        "-f", "--fpga", help="The desired FPGA.", type=int, default=fpga
+        "-f", "--fpga", help="The desired FPGA.", type=int, default=3
+    )
+    parser.add_argument(
+        "-d", "--dir", help="Directory to store results in.", type=Path
     )
     args = parser.parse_args()
 
-    wafer = args.wafer
-    fpga = args.fpga
+    return args
 
 
 if __name__ == "__main__":
-    parse_arguments()
-    main()
+    args = parse_arguments()
+
+    wafer: int = args.wafer
+    fpga: int = args.fpga
+    log_dir: Path = args.dir
+    main(wafer, fpga, log_dir)

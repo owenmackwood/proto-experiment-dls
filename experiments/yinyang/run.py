@@ -24,23 +24,29 @@ def parse_arguments():
     parser.add_argument(
         "-n", "--ntasks", help="Number of processes.", type=int, default=1
     )
+    parser.add_argument(
+        "-s", "--subdir", help="Subdirectory inside main directory to store results.", type=str, default=None
+    )
     args = parser.parse_args()
 
     return args
 
 
-def run_job():
+def run_job(args):
     import time
     from subprocess import run
     from pathlib import Path
 
-    
-    log_dir: Path = Path.home()/"data"/args.run/f"{time.strftime('%Y-%m-%d-%Hh%Mm%Ss')}"
+    log_dir: Path = Path.home()/"data"/args.run
+    if args.subdir is not None:
+        log_dir /= args.subdir
+    log_dir /= f"{time.strftime('%Y-%m-%d-%Hh%Mm%Ss')}"
     log_dir.mkdir(parents=True)
 
     args_str = f"--wafer={args.wafer} --fpga={args.fpga} --dir={log_dir}"
 
-    # calib_str = f"singularity exec --app dls /containers/stable/latest python calibrate.py  -w {args.wafer} -f {args.fpga} -t {args.run} -n True"
+    calib_str = f"python calibrate.py  -w {args.wafer} -f {args.fpga} -t {args.run} -n True"
+    run_str = f"source ~/venvs/ng/bin/activate && python {args.run}.py  {args_str}"
 
     bs = f"""#!/bin/bash
 #SBATCH --partition=cube
@@ -56,19 +62,15 @@ def run_job():
 #SBATCH --wafer={args.wafer}
 #SBATCH --fpga-without-aout={args.fpga}
 
-source ~/venvs/ng/bin/activate
-
-singularity exec --app dls /containers/stable/latest python {args.run}.py  {args_str}
+singularity exec --app dls /containers/stable/latest bash -c "{run_str}"
 """
 
     with open("run.sh", "wt") as f:
         f.write(bs)
 
-    print("Running sbatch")
     run(["sbatch", "run.sh"], shell=False)
 
 
-args = parse_arguments()
-
 if __name__ == "__main__":
-    run_job()
+    args = parse_arguments()
+    run_job(args)

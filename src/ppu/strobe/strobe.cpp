@@ -1,9 +1,11 @@
 #include <array>
-#include "libnux/dls.h"
-#include "libnux/mailbox.h"
-#include "libnux/spr.h"
-#include "libnux/time.h"
-#include "libnux/vector.h"
+#include "libnux/vx/v2/dls.h"
+#include "libnux/vx/v2/mailbox.h"
+#include "libnux/vx/v2/spr.h"
+#include "libnux/vx/v2/time.h"
+#include "libnux/vx/v2/vector.h"
+
+using namespace libnux::vx::v2;
 
 volatile size_t ppu_id = 0;
 volatile size_t n_ppus = 1;

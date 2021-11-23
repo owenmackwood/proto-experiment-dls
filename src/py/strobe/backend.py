@@ -136,6 +136,12 @@ class StrobeBackend:
                     init.highspeed_link.phy_configs_chip[7-i].enable_manual_training_mode = not value
                     init.highspeed_link.phy_configs_chip[7-i].vbias = haldls.PhyConfigChip.VBias(7)
 
+            # TEMP DISABLED FOR TESTING
+            # Configuration of DAC for synaptic trace measurement?
+            dac_config = init.dac_channel_block
+            dac_config.value[halco.DACChannelOnBoard.v_res_meas] = 4095
+            dac_config.value[halco.DACChannelOnBoard.mux_dac_25] = 2900
+
             init_builder, _ = init.generate()
         else:
             init_builder = stadls.PlaybackProgramBuilder()
@@ -147,9 +153,11 @@ class StrobeBackend:
         pad_mux.synapse_intermediate_mux_to_pad = True
         init_builder.write(halco.PadMultiplexerConfigOnDLS(1), pad_mux)
 
-        channel = haldls.DACChannel()
-        channel.value = int(1.2 / 2.5 * 4095)
-        init_builder.write(halco.DACChannelOnBoard.mux_dac_25, channel)
+        # TEMP ENABLED FOR TESTING
+        # Needed for resetting when in fast inference mode (incompatible with simultaneous readout of synaptic traces)
+        # channel = haldls.DACChannel()
+        # channel.value = int(1.2 / 2.5 * 4095)
+        # init_builder.write(halco.DACChannelOnBoard.mux_dac_25, channel)
 
         # modify neuron config
         boundaries = np.hstack([np.zeros(1, dtype=int), np.array(self.structure[1:]).cumsum()])
@@ -216,6 +224,7 @@ class StrobeBackend:
             calib_neuron_backend = self._neuron_calib.neurons[c.toAtomicNeuronOnDLS()]
             config = self._routing.neuron_backend_configs[c]
             config.refractory_time = calib_neuron_backend.refractory_period.refractory_time
+            print(f"REFRACTORY TIME: {config.refractory_time}", flush=True)
             config.select_input_clock = calib_neuron_backend.refractory_period.input_clock
             config.reset_holdoff = calib_neuron_backend.refractory_period.reset_holdoff
 
@@ -226,6 +235,19 @@ class StrobeBackend:
             builder.write(halco.CapMemCellOnDLS(halco.CapMemCellOnCapMemBlock.syn_i_bias_dac, block),
 
                           haldls.CapMemCell(self.synapse_bias))
+
+        # TEMP DISABLED FOR TESTING
+        # set synapse capmem cells
+        synapse_params = {
+                    halco.CapMemCellOnCapMemBlock.syn_i_bias_ramp: 400,  # Controls time constant of correlation sensor 400 ~ 8 us (smaller values increase time constant)
+                    halco.CapMemCellOnCapMemBlock.syn_i_bias_store: 50,  # Amplitude (smaller values increase) 
+                    halco.CapMemCellOnCapMemBlock.syn_i_bias_corout: 600,  # Ignore
+                }
+
+        for block in halco.iter_all(halco.CapMemBlockOnDLS):
+            for k, v in synapse_params.items():
+                builder.write(halco.CapMemCellOnDLS(k, block),
+                              haldls.CapMemCell(v))
 
         correlation_switch_quad = haldls.ColumnCorrelationQuad()
         switch = correlation_switch_quad.ColumnCorrelationSwitch()
@@ -273,6 +295,10 @@ class StrobeBackend:
         # static MADC config
         config = haldls.MADCConfig()
         builder.write(halco.MADCConfigOnDLS(), config)
+
+        for coord in halco.iter_all(halco.PadMultiplexerConfigOnDLS):
+            builder.write(coord, haldls.PadMultiplexerConfig())
+
         stadls.run(self._connection, builder.done())
 
     def set_readout(self, neuron_index: int, target="membrane"):
@@ -491,7 +517,7 @@ class StrobeBackend:
 
     def run(self, input_spikes, n_samples=None, duration=None, measure_power=False, trigger_reset=False, record_madc=False):
         if self._measure_correlation:
-            baseline = self._measure_correlation_baseline()
+            self.baseline = self._measure_correlation_baseline()
 
         builder = stadls.PlaybackProgramBuilder()
 
@@ -539,7 +565,7 @@ class StrobeBackend:
             builder.block_until(
                 halco.TimerOnDLS(),
                 int((b * self.sample_separation + timing_offset) * 1e6 * fisch.fpga_clock_cycles_per_us))
-
+            print(f"BLOCK UNTIL: {b * self.sample_separation + timing_offset }", flush=True)
             # start CADC recording via PPU
             if trigger_reset:
                 command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN_AND_RESET.value))
@@ -556,6 +582,7 @@ class StrobeBackend:
             # shift inputs in case the first layer is recurrent
             labels += self._input_shift
 
+            # TEMP DISABLED FOR TESTING
             builder.merge_back(self._routing.generate_spike_train(times, labels))
 
             # Need to block so that PPU can finish reading out membrane potentials
@@ -665,19 +692,19 @@ class StrobeBackend:
                 (halco.SynapseRowOnDLS.size, halco.NeuronColumnOnDLS.size),
                 dtype=np.int)
             for sample_idx, tickets in enumerate(corr_tickets):
-                b_begin = sample_idx * self.sample_separation
-                # last_ticket = int(tickets[-1].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
-                # print(f"Since sample start: {last_ticket - b_begin:.3e}")
+                b_begin = sample_idx * self.sample_separation + timing_offset
+                first_ticket = int(tickets[0].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
+                last_ticket = int(tickets[-1].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
+                print(f"Since sample start: {last_ticket - b_begin:.3e}", flush=True)
+                print(f"Correlation readout: {last_ticket - first_ticket:.3e}", flush=True)
 
                 for ticket_id, ticket in enumerate(tickets):
                     measurement[ticket_id, :] = ticket.get().causal.to_numpy()
 
+                measurement = self.baseline - measurement
                 measurement[:inputs, :] = measurement[:inputs, :][ordering, :]
                 measurement[inputs:, :] = measurement[inputs:, :][ordering, :]
-                measurement -= baseline
-                # print(f"Single trial trace: {measurement.min()} - {measurement.max()}, mean: {measurement.mean()}")
                 causal_traces.append(measurement)
-                # causal_traces.append(measurement)
 
         if record_madc:
             samples = program.madc_samples.to_numpy()

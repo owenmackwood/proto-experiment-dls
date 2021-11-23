@@ -3,6 +3,7 @@ from typing import Dict, Union, Tuple
 from numbers import Real
 import numpy as np
 from numpy.lib.npyio import NpzFile
+import quantities as pq
 
 """
 v_leak, v_reset: 30 to 100
@@ -62,7 +63,6 @@ def calibrate(
     targets: Targets, 
     neurons: int, 
     prompt: bool,
-    convert_to_usec: bool = False,
 ):
 
     c_file = Path(calibration_file)
@@ -73,18 +73,18 @@ def calibrate(
     wf_target_key = targets_to_key(targets)
     calibration = wafer_calibrations.setdefault(wf_target_key, {})
 
-    if len(calibration):
-        prompt_str = f"Existing calibration found: {calibration}. Re-run calibration?"
-    else:
-        prompt_str = f"Calibration for the chosen targets on w{wafer}f{fpga} not found. Run the calibration?"
+    already_calibrated = len(calibration)
 
-    if not prompt or input(f"{prompt_str} [yes/NO] ").lower() == "yes":
+    prompt_str = f"Calibration for the chosen targets on w{wafer}f{fpga} not found. Run the calibration?"
+
+    run_calibration = not already_calibrated and (not prompt or input(f"{prompt_str} [yes/NO] ").lower() == "yes")
+    if run_calibration:
         import pystadls_vx_v2 as stadls
         import pyhxcomm_vx as hxcomm
         import calix.common
         import calix.spiking.neuron
 
-        calib_targets = targets_to_calibrate(targets, neurons, convert_to_usec)
+        calib_targets = targets_to_calibrate(targets, neurons)
 
         with hxcomm.ManagedConnection() as connection:
             init = stadls.ExperimentInit()
@@ -103,9 +103,6 @@ def calibrate(
 
             np.savez(c_file, **all_calibrations)
 
-    else:
-        print("Aborting.")
-
     return wafer_calibrations[wf_target_key]
 
 
@@ -116,7 +113,7 @@ def targets_to_key(targets: Targets) -> Key:
         )
 
 
-def targets_to_calibrate(targets: Targets, neurons: int, convert_to_us: bool):
+def targets_to_calibrate(targets: Targets, neurons: int):
     targets = targets.copy()
     for k, v in targets.items():
         if isinstance(v, dict):
@@ -129,12 +126,14 @@ def targets_to_calibrate(targets: Targets, neurons: int, convert_to_us: bool):
             print(f"{k}[{bounds[-1]}:] = {values[-1]:.2e}")
             va[bounds[-1]:] = values[-1]
             targets[k] = va
-        if np.any(targets[k] < 1e-3):
-            if convert_to_us and k in ("tau_mem", "tau_syn", "refractory_time"):
-                print(f"Converting {k} to useconds!")
-                targets[k] *= 1e6
+        if k in ("tau_mem", "tau_syn", "refractory_time"):
+            if np.any(targets[k] < 1e-2):
+                print(f"{k} already in useconds!")
+                targets[k] = targets[k] * pq.sec
             else:
-                raise ValueError(f"Target for {k} is too small {targets[k]} not in useconds")
+                print(f"Converting {k} to useconds!")
+                targets[k] = targets[k] * pq.us
+
     return targets
 
 
@@ -172,5 +171,5 @@ if __name__ == "__main__":
         mod.calibration_file,
         args.wafer, args.fpga, 
         mod.targets, 
-        512, not args.no_prompt, True
+        512, not args.no_prompt
     )

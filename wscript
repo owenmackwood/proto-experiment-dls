@@ -102,13 +102,13 @@ def build_ppu_cpp(bld):
     """
     bld(target=f"{EXPERIMENT_NAME}-ppu_includes",
         export_includes=["src/ppu"],
-        env=bld.all_envs["nux_vx"])
+        env=bld.all_envs["nux_vx_v2"])
 
     bld.program(name=f"{EXPERIMENT_NAME}-ppu_strobe",
                 features="cxx",
                 target="strobe.bin",
                 source=[f"src/ppu/strobe/strobe.cpp"],
-                use=["nux_vx", "nux_runtime_vx",
+                use=["nux_vx_v2", "nux_runtime_vx_v2",
                      f"{EXPERIMENT_NAME}-ppu_includes"],
                 linkflags="-Wl,--defsym=mailbox_size=0",
-                env=bld.all_envs["nux_vx"])
+                env=bld.all_envs["nux_vx_v2"])

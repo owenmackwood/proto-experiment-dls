@@ -138,8 +138,8 @@ def main(wafer: int, fpga: int, log_dir: Path, optimize_hyperparameters: bool):
     # train_size = batch_size*50
     # test_size = batch_size*20
 
-    epochs = 2
-    batch_size = 1
+    epochs = 1
+    batch_size = 10
     train_size = batch_size*5
     test_size = batch_size*2
 
@@ -157,7 +157,7 @@ def main(wafer: int, fpga: int, log_dir: Path, optimize_hyperparameters: bool):
     w_hidden_scale: float = 1.21 / np.sqrt(n_input * input_repetitions)  # 0.10800539276323406 
     w_output_scale: float = 0.331 / np.sqrt(n_hidden)  # 0.02124551864526359 
 
-    eta: float = 1.5e-3
+    eta: float = 0.  # 1.5e-3
     spike_target_hidden: float = 1. / n_output
     spike_target_output: float = 1.
     reset_cadc_each_sample: bool = False  # Should be set to True if recording membrane values for the entire sample, i.e. n_samples * spike_shift ~ sample_separation
@@ -242,7 +242,7 @@ def main(wafer: int, fpga: int, log_dir: Path, optimize_hyperparameters: bool):
     r_big = r_small*5
     max_refractory: float = max(refractory_output, refractory_hidden)
     input_shift: float = spike_shift
-    sample_separation: float = input_shift + 2*2e-6*r_big + max_refractory + 10e-3 # for CADC read-out
+    sample_separation: float = input_shift + 2*2e-6*r_big + max_refractory + 3e-3  # 10e-3 # for CADC read-out (takes about 2.88 ms) plus reset (something >5ms probably).
     # if reset_cadc_each_sample:
     #     input_shift += max_refractory
     #     sample_separation += input_shift + 2e-6*r_big * 2.
@@ -443,7 +443,9 @@ def run_n_times(
                 t_weight_update = fr_train.t_weight_update
 
                 print(20*"=", "Testing", 20*"=")
-                fr_test = forward_p(epoch, test_loader, False)
+                # TEMP DISABLED FOR TESTING
+                # fr_test = forward_p(epoch, test_loader, False)
+                fr_test = ForwardResult(0., 0., 0., 0., 0.)
                 test_loss[epoch] = fr_test.loss
                 test_accuracy[epoch] = fr_test.accuracy
                 t_backend_test = fr_test.t_backend
@@ -503,7 +505,7 @@ def forward(
 
     dataset_size = len(data_loader.dataset)
     batch_size = data_loader.batch_size
-    num_batches = dataset_size // batch_size
+    batches_per_epoch = dataset_size // batch_size
     hw_batch_size = min(batch_size, max_hw_batch_size)
     hw_batch_bounds = np.arange(0, batch_size, hw_batch_size)
 
@@ -708,7 +710,7 @@ def forward(
             no_str = f"[No output spikes: {no_outputs}, hidden spikes: {min_hidden} - {max_hidden}]"
         else:
             no_str = ""
-        print(f"Batch: {batch_idx+1}/{num_batches}, Accuracy: {accuracy:.2f} ({adjusted_accuracy:.2f}), Loss: {mean_loss:.3f} {no_str}")
+        print(f"Batch: {batch_idx+1}/{batches_per_epoch}, Accuracy: {accuracy:.2f} ({adjusted_accuracy:.2f}), Loss: {mean_loss:.3f} {no_str}")
 
         if update_weights:
             t_start_w = time.time()
@@ -758,7 +760,7 @@ def forward(
             np.clip(weights_hidden, -w_max, w_max, out=weights_hidden)
             np.clip(weights_output, -w_max, w_max, out=weights_output)
 
-            tb_i = epoch * num_batches + batch_idx
+            tb_i = epoch * batches_per_epoch + batch_idx
 
             for cls in range(n_output):
                 cls_at = c_all == cls
@@ -773,6 +775,14 @@ def forward(
                 output_spikes = np.hstack(output_spikes)
 
                 if measure_hw_correlation:
+                    for b in range(batch_size):
+                        tb_s = tb_i * batch_size + b
+                        tb.add_histogram("per_sample/hidden", thd[b], tb_s)
+                        tb.add_histogram("per_sample/output", tod[b], tb_s)
+                        tb.add_scalar("per_sample/mean_hidden", thd[b].mean(), tb_s)
+                        tb.add_scalar("per_sample/mean_output", tod[b].mean(), tb_s)
+
+
                     tb.add_histogram("traces/differences_hidden", np.abs(traces_hidden_dev[..., 0] - traces_hidden_dev[..., 1]), tb_i)
                     tb.add_histogram("traces/differences_output", np.abs(traces_output_dev[..., 0] - traces_output_dev[..., 1]), tb_i)
                     tb.add_scalar("traces/correlation_output", to_corr[0, 1], tb_i)
@@ -781,20 +791,29 @@ def forward(
                     tb.add_scalar("traces/hidden_max", traces_hidden_dev.max(), tb_i)
                     tb.add_scalar("traces/output_min", traces_output_dev.min(), tb_i)
                     tb.add_scalar("traces/output_max", traces_output_dev.max(), tb_i)
-                    trace_bins = np.arange(256)
+                    tb.add_histogram("traces/hidden_avg", thd, tb_i,)# bins=np.arange(-32, 32, 1))
+                    tb.add_histogram("traces/output_avg", tod, tb_i,)# bins=np.arange(-32, 32, 1))
                     tb.add_histogram("traces/hidden_dev", traces_hidden_dev, tb_i)#, bins=trace_bins)
                     tb.add_histogram("traces/output_dev", traces_output_dev, tb_i)#, bins=trace_bins)
-                    tb.add_histogram("traces/baseline", backend.baseline, tb_i, bins=trace_bins)
+                    tb.add_histogram("traces/baseline", backend.baseline, tb_i, bins=np.arange(256))
 
-                # for tn, tc in zip(("hidden", "output"), (thd, tod)):
-                #     fig = plt.figure()
-                #     gs = GridSpec(5, 5, hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
-                #     for a in range(25):
-                #         ij = np.unravel_index(a, (5, 5))
-                #         ax = fig.add_subplot(gs[ij])
-                #         ax.pcolor(tc[a], vmin=0, vmax=255)
-                #         ax.set(xticks=(), yticks=())
-                #     tb.add_figure(f"traces/{tn}", fig, tb_i)
+                    for tn, tcd, tcc in zip(("hidden", "output"), (thd, tod), (traces_hidden, traces_output)):
+                        fig = plt.figure()
+                        gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                        ax = fig.add_subplot(gs[0])
+                        ax.scatter(tcd.flatten(), tcc.flatten())
+                        tb.add_figure(f"traces/batches_{tn}", fig, tb_i)
+                        
+                        fig = plt.figure()
+                        n = max(int(np.floor(np.sqrt(batch_size))), 1)
+                        gs = GridSpec(n, n,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                        for a in range(n**2):
+                            ij = np.unravel_index(a, (n, n))
+                            ax: plt.Axes = fig.add_subplot(gs[ij])
+                            ax.scatter(tcd, tcc)
+                            #ax.pcolor(tc[a], vmin=0, vmax=255)
+                            #ax.set(xticks=(), yticks=())
+                        tb.add_figure(f"traces/scatter_{tn}", fig, tb_i)
 
                 tb.add_histogram("class/probability", y_hat, tb_i, bins=prob_bins)
                 tb.add_histogram("class/cross_entropy", cross_entropy, tb_i)

@@ -224,7 +224,7 @@ class StrobeBackend:
             calib_neuron_backend = self._neuron_calib.neurons[c.toAtomicNeuronOnDLS()]
             config = self._routing.neuron_backend_configs[c]
             config.refractory_time = calib_neuron_backend.refractory_period.refractory_time
-            print(f"REFRACTORY TIME: {config.refractory_time}", flush=True)
+            # print(f"REFRACTORY TIME: {config.refractory_time}", flush=True)
             config.select_input_clock = calib_neuron_backend.refractory_period.input_clock
             config.reset_holdoff = calib_neuron_backend.refractory_period.reset_holdoff
 
@@ -566,12 +566,13 @@ class StrobeBackend:
                 halco.TimerOnDLS(),
                 int((b * self.sample_separation + timing_offset) * 1e6 * fisch.fpga_clock_cycles_per_us))
             print(f"BLOCK UNTIL: {b * self.sample_separation + timing_offset }", flush=True)
+            # TEMP DISABLED FOR TESTING
             # start CADC recording via PPU
-            if trigger_reset:
-                command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN_AND_RESET.value))
-            else:
-                command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN.value))
-            self._signal_ppus(builder, self._ppu_signal_coordinate[0], command)
+            # if trigger_reset:
+            #     command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN_AND_RESET.value))
+            # else:
+            #     command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN.value))
+            # self._signal_ppus(builder, self._ppu_signal_coordinate[0], command)
 
             if (input_spikes[b][:, 0] >= self.sample_separation).any():
                 warnings.warn("Not all spikes are injected within the timing separation window. Expecting faulty timing. Please increase sample separation.")
@@ -583,7 +584,7 @@ class StrobeBackend:
             labels += self._input_shift
 
             # TEMP DISABLED FOR TESTING
-            builder.merge_back(self._routing.generate_spike_train(times, labels))
+            # builder.merge_back(self._routing.generate_spike_train(times, labels))
 
             # Need to block so that PPU can finish reading out membrane potentials
             builder.block_until(
@@ -593,7 +594,8 @@ class StrobeBackend:
             if self._measure_correlation:
                 builder.block_until(halco.BarrierOnFPGA(), haldls.Barrier.omnibus)
                 tickets = gonzales.measure_correlation(builder)
-                gonzales.reset_correlation(builder)
+                # TEMP DISABLED FOR TESTING
+                # gonzales.reset_correlation(builder)
                 corr_tickets.append(tickets)
 
         builder.block_until(
@@ -673,16 +675,17 @@ class StrobeBackend:
             if (raw_spikes[:, 1] >= boundaries[-1]).any():
                 print("Received spikes from unused neurons!")
 
+        # TEMP DISABLED FOR TESTING
         # FPGA
-        fpga_data = gonzales.parse_fpga_memory_u8(fpga_mem_ticket)
-        trace_data = fpga_data.reshape((hw_batch_size, -1, 128*self._n_vectors))[:, :, ::-1]
-        cadc_data = np.stack([trace_data[b, :, :] for b in range(hw_batch_size)]).astype(np.float)
+        # fpga_data = gonzales.parse_fpga_memory_u8(fpga_mem_ticket)
+        # trace_data = fpga_data.reshape((hw_batch_size, -1, 128*self._n_vectors))[:, :, ::-1]
+        # cadc_data = np.stack([trace_data[b, :, :] for b in range(hw_batch_size)]).astype(np.float)
 
-        cadc_data = cadc_data / 256 * 1.2
+        # cadc_data = cadc_data / 256 * 1.2
 
         traces = []
-        for l in range(len(self.structure) - 1):
-            traces.append(cadc_data[:, :, boundaries[l]:boundaries[l + 1]])
+        # for l in range(len(self.structure) - 1):
+        #     traces.append(cadc_data[:, :, boundaries[l]:boundaries[l + 1]])
 
         causal_traces = []
         if self._measure_correlation:

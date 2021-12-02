@@ -238,9 +238,17 @@ class StrobeBackend:
 
         # TEMP DISABLED FOR TESTING
         # set synapse capmem cells
+        """
+        The correlation measurement is based on discharging a "measurement" capacitor (not the one you read out). 
+        It is initially reset to this v_res_meas voltage, that happens automatically at a pre- or postsynaptic spike (for a/causal respectively). 
+        The i_bias_ramp controls how fast this capacitor is discharged before the other correlated event arrives, the i_bias_store controls how 
+        fast it is discharged after the other event arrived. During the latter phase, the remaining voltage on that measurement capacitor is 
+        exponentially weighted transferred to the "storage" capacitor (which you read out).
+        So syn_i_bias_store affects how fast the voltage decays during storage, and v_res_meas lets it start off with a lower voltage initially.
+        """
         synapse_params = {
                     halco.CapMemCellOnCapMemBlock.syn_i_bias_ramp: 400,  # Controls time constant of correlation sensor 400 ~ 8 us (smaller values increase time constant)
-                    halco.CapMemCellOnCapMemBlock.syn_i_bias_store: 50,  # Amplitude (smaller values increase) 
+                    halco.CapMemCellOnCapMemBlock.syn_i_bias_store: 200,  # Amplitude (smaller values increase) 
                     halco.CapMemCellOnCapMemBlock.syn_i_bias_corout: 600,  # Ignore
                 }
 
@@ -565,14 +573,14 @@ class StrobeBackend:
             builder.block_until(
                 halco.TimerOnDLS(),
                 int((b * self.sample_separation + timing_offset) * 1e6 * fisch.fpga_clock_cycles_per_us))
-            print(f"BLOCK UNTIL: {b * self.sample_separation + timing_offset }", flush=True)
+            # print(f"BLOCK UNTIL: {b * self.sample_separation + timing_offset }", flush=True)
             # TEMP DISABLED FOR TESTING
             # start CADC recording via PPU
-            # if trigger_reset:
-            #     command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN_AND_RESET.value))
-            # else:
-            #     command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN.value))
-            # self._signal_ppus(builder, self._ppu_signal_coordinate[0], command)
+            if trigger_reset:
+                command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN_AND_RESET.value))
+            else:
+                command = haldls.PPUMemoryWord(haldls.PPUMemoryWord.Value(PPUSignal.RUN.value))
+            self._signal_ppus(builder, self._ppu_signal_coordinate[0], command)
 
             if (input_spikes[b][:, 0] >= self.sample_separation).any():
                 warnings.warn("Not all spikes are injected within the timing separation window. Expecting faulty timing. Please increase sample separation.")
@@ -584,7 +592,7 @@ class StrobeBackend:
             labels += self._input_shift
 
             # TEMP DISABLED FOR TESTING
-            # builder.merge_back(self._routing.generate_spike_train(times, labels))
+            builder.merge_back(self._routing.generate_spike_train(times, labels))
 
             # Need to block so that PPU can finish reading out membrane potentials
             builder.block_until(
@@ -595,7 +603,7 @@ class StrobeBackend:
                 builder.block_until(halco.BarrierOnFPGA(), haldls.Barrier.omnibus)
                 tickets = gonzales.measure_correlation(builder)
                 # TEMP DISABLED FOR TESTING
-                # gonzales.reset_correlation(builder)
+                gonzales.reset_correlation(builder)
                 corr_tickets.append(tickets)
 
         builder.block_until(
@@ -677,15 +685,15 @@ class StrobeBackend:
 
         # TEMP DISABLED FOR TESTING
         # FPGA
-        # fpga_data = gonzales.parse_fpga_memory_u8(fpga_mem_ticket)
-        # trace_data = fpga_data.reshape((hw_batch_size, -1, 128*self._n_vectors))[:, :, ::-1]
-        # cadc_data = np.stack([trace_data[b, :, :] for b in range(hw_batch_size)]).astype(np.float)
+        fpga_data = gonzales.parse_fpga_memory_u8(fpga_mem_ticket)
+        trace_data = fpga_data.reshape((hw_batch_size, -1, 128*self._n_vectors))[:, :, ::-1]
+        cadc_data = np.stack([trace_data[b, :, :] for b in range(hw_batch_size)]).astype(np.float)
 
-        # cadc_data = cadc_data / 256 * 1.2
+        cadc_data = cadc_data / 256 * 1.2
 
         traces = []
-        # for l in range(len(self.structure) - 1):
-        #     traces.append(cadc_data[:, :, boundaries[l]:boundaries[l + 1]])
+        for l in range(len(self.structure) - 1):
+            traces.append(cadc_data[:, :, boundaries[l]:boundaries[l + 1]])
 
         causal_traces = []
         if self._measure_correlation:
@@ -695,19 +703,22 @@ class StrobeBackend:
                 (halco.SynapseRowOnDLS.size, halco.NeuronColumnOnDLS.size),
                 dtype=np.int)
             for sample_idx, tickets in enumerate(corr_tickets):
-                b_begin = sample_idx * self.sample_separation + timing_offset
-                first_ticket = int(tickets[0].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
-                last_ticket = int(tickets[-1].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
-                print(f"Since sample start: {last_ticket - b_begin:.3e}", flush=True)
-                print(f"Correlation readout: {last_ticket - first_ticket:.3e}", flush=True)
+                # b_begin = sample_idx * self.sample_separation + timing_offset
+                # first_ticket = int(tickets[0].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
+                # last_ticket = int(tickets[-1].fpga_time) / fisch.fpga_clock_cycles_per_us / 1e6
+                # print(f"Since sample start: {last_ticket - b_begin:.3e}", flush=True)
+                # print(f"Correlation readout: {last_ticket - first_ticket:.3e}", flush=True)
 
                 for ticket_id, ticket in enumerate(tickets):
                     measurement[ticket_id, :] = ticket.get().causal.to_numpy()
+                # print(f"Raw {sample_idx}: {measurement[0,:]}")
+                
+                corrected = self.baseline - measurement
+                corrected[:inputs, :] = corrected[:inputs, :][ordering, :]
+                corrected[inputs:, :] = corrected[inputs:, :][ordering, :]
+                # print(f"Shuffled {sample_idx}: {meas[0,:]}")
 
-                measurement = self.baseline - measurement
-                measurement[:inputs, :] = measurement[:inputs, :][ordering, :]
-                measurement[inputs:, :] = measurement[inputs:, :][ordering, :]
-                causal_traces.append(measurement)
+                causal_traces.append(corrected)
 
         if record_madc:
             samples = program.madc_samples.to_numpy()

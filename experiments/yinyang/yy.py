@@ -11,7 +11,9 @@ from torch.utils.tensorboard import SummaryWriter
 from numba import njit
 import argparse
 
-n_input: int = 5
+test_correlation = True
+
+n_input: int = 2 if test_correlation else 5
 n_hidden: int = 243
 n_output: int = 3
 
@@ -138,10 +140,10 @@ def main(wafer: int, fpga: int, log_dir: Path, optimize_hyperparameters: bool):
     # train_size = batch_size*50
     # test_size = batch_size*20
 
-    epochs = 1
+    epochs = 2
     batch_size = 10
-    train_size = batch_size*5
-    test_size = batch_size*2
+    train_size = batch_size*50
+    test_size = batch_size*20
 
 
     regularize_per_sample = True
@@ -239,10 +241,14 @@ def main(wafer: int, fpga: int, log_dir: Path, optimize_hyperparameters: bool):
         #     lambda0=ng.p.Log(init=lambda0, lower=1e-7, upper=1.),
         # )
 
+    if test_correlation:
+        r_small = 10.
+        input_repetitions = 16  # 128 // n_input
+
     r_big = r_small*5
     max_refractory: float = max(refractory_output, refractory_hidden)
     input_shift: float = spike_shift
-    sample_separation: float = input_shift + 2*2e-6*r_big + max_refractory + 3e-3  # 10e-3 # for CADC read-out (takes about 2.88 ms) plus reset (something >5ms probably).
+    sample_separation: float = input_shift + 2*2e-6*r_big + max_refractory + 10e-3  # for CADC read-out (takes about 2.88 ms) plus reset (something >5ms probably).
     # if reset_cadc_each_sample:
     #     input_shift += max_refractory
     #     sample_separation += input_shift + 2e-6*r_big * 2.
@@ -372,17 +378,50 @@ def run_n_times(
         
         with hxcomm.ManagedConnection() as connection, SummaryWriter(curr_log_dir) as tb:
 
-            weights_hidden = np.random.normal(
-                size=(n_input * input_repetitions, n_hidden), 
-                loc=w_hidden_mean,
-                scale=w_hidden_scale
-            )
+            if test_correlation:
+                w_max = 63. / 200.
+                w0 = 100. / hw_scale
+                weights_hidden = np.zeros((n_input * input_repetitions, n_hidden))
+                weights_output = np.zeros((n_hidden, n_output))
+                weights_hidden[0:: n_input, :n_hidden//2] = w0
+                weights_hidden[1:: n_input, n_hidden//2:] = w0
+                # for i in range(n_hidden):
+                #     start = i % n_input  # (i * n_input) % weights_hidden.shape[0]
+                #     weights_hidden[start : : n_input, i] = w0
 
-            weights_output = np.random.normal(
-                size=(n_hidden, n_output), 
-                loc=w_output_mean,
-                scale=w_output_scale
-            )
+                weights_output[:n_hidden//2, 0] = w0
+                weights_output[n_hidden//2:, 1] = w0
+                # weights_output[0::n_input, 0] = w0
+                # weights_output[2::n_input, 0] = w0
+                # weights_output[1::n_input, 1] = w0
+                # weights_output[3::n_input, 1] = w0
+                # weights_output[4::n_input, 2] = w0
+
+                from torch.utils.data.dataset import Dataset
+                class YinYangDataset(Dataset):
+                    def __init__(self, r_small, r_big, size, seed):
+                        self.r_big = r_big
+                        self.r_small = r_small
+                        vals = np.linspace(2., 2*r_big-2., n_input)
+                        self.__vals = [vals.copy() for _ in range(size)]
+                        self.class_names = ['yin', 'yang', 'dot']
+                    def __getitem__(self, index):
+                        return self.__vals[index], 0
+                    def __len__(self):
+                        return len(self.__vals)
+
+            else:
+                weights_hidden = np.random.normal(
+                    size=(n_input * input_repetitions, n_hidden), 
+                    loc=w_hidden_mean,
+                    scale=w_hidden_scale
+                )
+
+                weights_output = np.random.normal(
+                    size=(n_hidden, n_output), 
+                    loc=w_output_mean,
+                    scale=w_output_scale
+                )
 
             weight_layers: List[np.ndarray] = [weights_hidden, weights_output]
 
@@ -444,8 +483,8 @@ def run_n_times(
 
                 print(20*"=", "Testing", 20*"=")
                 # TEMP DISABLED FOR TESTING
-                # fr_test = forward_p(epoch, test_loader, False)
-                fr_test = ForwardResult(0., 0., 0., 0., 0.)
+                fr_test = forward_p(epoch, test_loader, False)
+                # fr_test = ForwardResult(0., 0., 0., 0., 0.)
                 test_loss[epoch] = fr_test.loss
                 test_accuracy[epoch] = fr_test.accuracy
                 t_backend_test = fr_test.t_backend
@@ -562,12 +601,14 @@ def forward(
 
         traces_hidden = np.zeros((batch_size, n_input, n_hidden))
         traces_output = np.zeros((batch_size, n_hidden, n_output))
+        traces_dev = np.zeros((batch_size, 512, 256))
         traces_hidden_dev = np.zeros((batch_size, input_repetitions, n_input, n_hidden, 2))
         traces_output_dev = np.zeros((batch_size, n_hidden, n_output, 2))
         spikes_per_hidden = np.zeros((batch_size, n_hidden))
         spikes_per_output = spikes_per_output_ds[batch_slice, :]
 
-        labels = np.arange(n_input) + 256
+        labels = np.arange(input_repetitions * n_input) + 256
+        # labels = np.hstack(input_repetitions * [np.arange(n_input) + 256])
         batch_x *= 1e-6
         c_all[:] =  batch_y
         y_all[np.arange(batch_size), batch_y] = 1
@@ -576,11 +617,13 @@ def forward(
             times = batch_x[b, :]
             in_all[b, :] = times
             times += input_shift
+            times = np.hstack(input_repetitions * [times])
             order = np.argsort(times)
             input_spikes.append(np.vstack([times[order], labels[order]]).T)
 
         backend.write_weights(*[w*hw_scale for w in weight_layers])
 
+        traces_dev.fill(np.NaN)
         traces_hidden_dev.fill(np.NaN)
         traces_output_dev.fill(np.NaN)
         for s in [slice(i, min(batch_size, i + hw_batch_size)) for i in hw_batch_bounds]:
@@ -614,10 +657,13 @@ def forward(
                 plt.savefig(f"{madc_rec}.png")
 
             if measure_hw_correlation:
+                assert len(causal_traces) == (s.stop - s.start)
+                td = traces_dev[s, ...]
                 thd = traces_hidden_dev[s, ...]
                 tod = traces_output_dev[s, ...]
                 for b, ct in enumerate(causal_traces):
                     assert ct.shape == (512, 256), f"Unexpected shape {ct.shape}"
+                    td[b, :] = ct
                     for j in range(input_repetitions):
                         s_first = 2*n_input*j
                         s_last = s_first + 2*n_input
@@ -665,14 +711,28 @@ def forward(
 
 
         if measure_hw_correlation:
+            assert np.all(np.isfinite(traces_dev))
             assert np.all(np.isfinite(traces_hidden_dev))
             assert np.all(np.isfinite(traces_output_dev))
             thd = traces_hidden_dev.mean(axis=(1, 4))
             tod = traces_output_dev.mean(axis=3)
             assert thd.shape == traces_hidden.shape
             assert tod.shape == traces_output.shape
-            th_corr = np.corrcoef(traces_hidden.flatten(), thd.flatten())
-            to_corr = np.corrcoef(traces_output.flatten(), tod.flatten())
+
+            thf = traces_hidden.flatten()
+            thdf = thd.flatten()
+            tof = traces_output.flatten()
+            todf = tod.flatten()
+
+            th_corr = np.corrcoef(thf, thdf)[0, 1]
+            to_corr = np.corrcoef(tof, todf)[0, 1]
+
+            hi = np.argwhere(thf > 1e-1)
+            oi = np.argwhere(tof > 1e-1)
+            print(f"Non-zero traces, hidden: {hi.size}, output: {oi.size}")
+            th_corr_adj = np.corrcoef(thf[hi].flatten(), thdf[hi].flatten())[0, 1] if hi.size else 0.
+            to_corr_adj = np.corrcoef(tof[oi].flatten(), todf[oi].flatten())[0, 1] if oi.size else 0.
+
         # print("BASELINE")
         # for i in range(512):
         #     print("[" + ", ".join(f"{backend.baseline[i, j]:.0f}" for j in range(256)) + "],")
@@ -764,7 +824,7 @@ def forward(
 
             for cls in range(n_output):
                 cls_at = c_all == cls
-                cls_accuracy = (class_estimate[cls_at] == cls).sum() / cls_at.sum()
+                cls_accuracy = (class_estimate[cls_at] == cls).sum() / max(cls_at.sum(), 1)
                 tb.add_scalar(f"train/class_{data_loader.dataset.class_names[cls]}", cls_accuracy, tb_i)
             tb.add_scalar("train/accuracy", accuracy, tb_i)
             tb.add_scalar("train/accuracy_adjusted", adjusted_accuracy, tb_i)
@@ -777,16 +837,20 @@ def forward(
                 if measure_hw_correlation:
                     for b in range(batch_size):
                         tb_s = tb_i * batch_size + b
+                        tb.add_histogram("per_sample/all", traces_dev[b], tb_s)
                         tb.add_histogram("per_sample/hidden", thd[b], tb_s)
                         tb.add_histogram("per_sample/output", tod[b], tb_s)
+                        tb.add_scalar("per_sample/mean_all", traces_dev[b].mean(), tb_s)
                         tb.add_scalar("per_sample/mean_hidden", thd[b].mean(), tb_s)
                         tb.add_scalar("per_sample/mean_output", tod[b].mean(), tb_s)
 
 
                     tb.add_histogram("traces/differences_hidden", np.abs(traces_hidden_dev[..., 0] - traces_hidden_dev[..., 1]), tb_i)
                     tb.add_histogram("traces/differences_output", np.abs(traces_output_dev[..., 0] - traces_output_dev[..., 1]), tb_i)
-                    tb.add_scalar("traces/correlation_output", to_corr[0, 1], tb_i)
-                    tb.add_scalar("traces/correlation_hidden", th_corr[0, 1], tb_i)
+                    tb.add_scalar("traces/correlation_output", to_corr, tb_i)
+                    tb.add_scalar("traces/correlation_hidden", th_corr, tb_i)
+                    tb.add_scalar("traces/correlation_adj_output", to_corr_adj, tb_i)
+                    tb.add_scalar("traces/correlation_adj_hidden", th_corr_adj, tb_i)
                     tb.add_scalar("traces/hidden_min", traces_hidden_dev.min(), tb_i)
                     tb.add_scalar("traces/hidden_max", traces_hidden_dev.max(), tb_i)
                     tb.add_scalar("traces/output_min", traces_output_dev.min(), tb_i)
@@ -797,22 +861,67 @@ def forward(
                     tb.add_histogram("traces/output_dev", traces_output_dev, tb_i)#, bins=trace_bins)
                     tb.add_histogram("traces/baseline", backend.baseline, tb_i, bins=np.arange(256))
 
+                    fig = plt.figure(figsize=(16, 12))
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(traces_dev.mean(axis=0).T)
+                    fig.colorbar(im)
+                    tb.add_figure(f"traces/all", fig, tb_i)
+
+                    fig = plt.figure()
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(thd.mean(axis=0))
+                    fig.colorbar(im)
+                    tb.add_figure(f"traces/array_hidden", fig, tb_i)
+
+                    fig = plt.figure()
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(tod.mean(axis=0))
+                    fig.colorbar(im)
+                    tb.add_figure(f"traces/array_output", fig, tb_i)
+
+                    fig = plt.figure()
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(traces_hidden.mean(axis=0))
+                    fig.colorbar(im)
+                    tb.add_figure(f"traces/array_hidden_offline", fig, tb_i)
+
+                    fig = plt.figure()
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(traces_output.mean(axis=0))
+                    fig.colorbar(im)
+                    tb.add_figure(f"traces/array_output_offline", fig, tb_i)
+
+                    fig = plt.figure()
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    ax.scatter(thdf[hi], thf[hi])
+                    tb.add_figure(f"traces/nonzero_hidden", fig, tb_i)
+
+                    fig = plt.figure()
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    ax.scatter(todf[oi], tof[oi])
+                    tb.add_figure(f"traces/nonzero_output", fig, tb_i)
+
                     for tn, tcd, tcc in zip(("hidden", "output"), (thd, tod), (traces_hidden, traces_output)):
                         fig = plt.figure()
                         gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
                         ax = fig.add_subplot(gs[0])
                         ax.scatter(tcd.flatten(), tcc.flatten())
                         tb.add_figure(f"traces/batches_{tn}", fig, tb_i)
-                        
+
                         fig = plt.figure()
                         n = max(int(np.floor(np.sqrt(batch_size))), 1)
                         gs = GridSpec(n, n,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
                         for a in range(n**2):
                             ij = np.unravel_index(a, (n, n))
                             ax: plt.Axes = fig.add_subplot(gs[ij])
-                            ax.scatter(tcd, tcc)
-                            #ax.pcolor(tc[a], vmin=0, vmax=255)
-                            #ax.set(xticks=(), yticks=())
+                            ax.scatter(tcd[a], tcc[a])
                         tb.add_figure(f"traces/scatter_{tn}", fig, tb_i)
 
                 tb.add_histogram("class/probability", y_hat, tb_i, bins=prob_bins)

@@ -379,8 +379,7 @@ def run_n_times(
         with hxcomm.ManagedConnection() as connection, SummaryWriter(curr_log_dir) as tb:
 
             if test_correlation:
-                w_max = 63. / 200.
-                w0 = 100. / hw_scale
+                w0 = 63. / hw_scale
                 weights_hidden = np.zeros((n_input * input_repetitions, n_hidden))
                 weights_output = np.zeros((n_hidden, n_output))
                 weights_hidden[0:: n_input, :n_hidden//2] = w0
@@ -601,7 +600,7 @@ def forward(
 
         traces_hidden = np.zeros((batch_size, n_input, n_hidden))
         traces_output = np.zeros((batch_size, n_hidden, n_output))
-        traces_dev = np.zeros((batch_size, 512, 256))
+        traces_dev = np.zeros((batch_size, 256, 256))
         traces_hidden_dev = np.zeros((batch_size, input_repetitions, n_input, n_hidden, 2))
         traces_output_dev = np.zeros((batch_size, n_hidden, n_output, 2))
         spikes_per_hidden = np.zeros((batch_size, n_hidden))
@@ -662,22 +661,30 @@ def forward(
                 thd = traces_hidden_dev[s, ...]
                 tod = traces_output_dev[s, ...]
                 for b, ct in enumerate(causal_traces):
-                    assert ct.shape == (512, 256), f"Unexpected shape {ct.shape}"
                     td[b, :] = ct
-                    for j in range(input_repetitions):
-                        s_first = 2*n_input*j
-                        s_last = s_first + 2*n_input
-                        for k in range(n_hidden):
-                            thd[b, j, :, k, 0] = ct[k*2, s_first:s_last:2]
-                            thd[b, j, :, k, 1] = ct[k*2, s_first+1:s_last:2]
+                    if ct.shape == (256, 256):
+                        for j in range(input_repetitions):
+                            for k in range(n_hidden):
+                                thd[b, j, :, k, 0] = ct[j*n_input: (j+1)*n_input, k]
+                                thd[b, j, :, k, 1] = ct[j*n_input: (j+1)*n_input, k]
+                        tod[b, ..., 0] = ct[:n_hidden, n_hidden:n_hidden+n_output]
+                        tod[b, ..., 1] = ct[:n_hidden, n_hidden:n_hidden+n_output]
+                    else:
+                        # Backend did not preprocess the correlation array
+                        for j in range(input_repetitions):
+                            s_first = 2*n_input*j
+                            s_last = s_first + 2*n_input
+                            for k in range(n_hidden):
+                                thd[b, j, :, k, 0] = ct[k*2, s_first:s_last:2]
+                                thd[b, j, :, k, 1] = ct[k*2, s_first+1:s_last:2]
 
-                    s_last = 2*(n_hidden - 128)
-                    for j in range(n_output):
-                        k = 2*(n_hidden + j)
-                        tod[b, :128, j, 0] = ct[k, ::2]
-                        tod[b, :128, j, 1] = ct[k, 1::2]
-                        tod[b, 128:, j, 0] = ct[k+1, :s_last:2]
-                        tod[b, 128:, j, 1] = ct[k+1, 1:s_last:2]
+                        s_last = 2*(n_hidden - 128)
+                        for j in range(n_output):
+                            k = 2*(n_hidden + j)
+                            tod[b, :128, j, 0] = ct[k, ::2]
+                            tod[b, :128, j, 1] = ct[k, 1::2]
+                            tod[b, 128:, j, 0] = ct[k+1, :s_last:2]
+                            tod[b, 128:, j, 1] = ct[k+1, 1:s_last:2]
 
             if update_weights:
                 t_start_trace = time.time()
@@ -860,6 +867,32 @@ def forward(
                     tb.add_histogram("traces/hidden_dev", traces_hidden_dev, tb_i)#, bins=trace_bins)
                     tb.add_histogram("traces/output_dev", traces_output_dev, tb_i)#, bins=trace_bins)
                     tb.add_histogram("traces/baseline", backend.baseline, tb_i, bins=np.arange(256))
+
+                    fig = plt.figure(figsize=(16, 12))
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(backend._routing.weights_assigned)
+                    fig.colorbar(im)
+                    tb.add_figure(f"weights/assigned", fig, tb_i)
+
+                    # inputs = halco.SynapseRowOnSynram.size
+                    # ordering = np.argsort(backend._routing._lookup)
+                    # waro = backend._routing.weights_assigned.T.copy()
+                    # waro[:inputs, :] = waro[:inputs, :][ordering, :]
+                    # waro[inputs:, :] = waro[inputs:, :][ordering, :]
+                    # fig = plt.figure(figsize=(16, 12))
+                    # gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    # ax = fig.add_subplot(gs[0])
+                    # im = ax.pcolor(waro.T)
+                    # fig.colorbar(im)
+                    # tb.add_figure(f"weights/assigned_reord", fig, tb_i)
+                    
+                    fig = plt.figure(figsize=(16, 12))
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(backend.weights_unrolled)
+                    fig.colorbar(im)
+                    tb.add_figure(f"weights/unrolled", fig, tb_i)
 
                     fig = plt.figure(figsize=(16, 12))
                     gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)

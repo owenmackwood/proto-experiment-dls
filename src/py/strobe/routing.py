@@ -222,6 +222,8 @@ class RoutingGenerator(stadls.PlaybackGenerator):
         synapse_matrix_bottom.labels.from_numpy(label_matrix_bottom)
         synapse_matrix_bottom.weights.from_numpy(weights_assigned[:, 256:512])
 
+        self.weights_assigned = weights_assigned
+
         return synapse_matrix_top, synapse_matrix_bottom
 
     def transform_events_from_chip(self, spikes):

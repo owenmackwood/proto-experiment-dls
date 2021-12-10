@@ -601,8 +601,9 @@ def forward(
         traces_hidden = np.zeros((batch_size, n_input, n_hidden))
         traces_output = np.zeros((batch_size, n_hidden, n_output))
         traces_dev = np.zeros((batch_size, 256, 256))
-        traces_hidden_dev = np.zeros((batch_size, input_repetitions, n_input, n_hidden, 2))
-        traces_output_dev = np.zeros((batch_size, n_hidden, n_output, 2))
+        traces_raw = np.zeros((batch_size, 512, 256))
+        traces_hidden_dev = np.zeros((batch_size, input_repetitions, n_input, n_hidden))
+        traces_output_dev = np.zeros((batch_size, n_hidden, n_output))
         spikes_per_hidden = np.zeros((batch_size, n_hidden))
         spikes_per_output = spikes_per_output_ds[batch_slice, :]
 
@@ -658,17 +659,16 @@ def forward(
             if measure_hw_correlation:
                 assert len(causal_traces) == (s.stop - s.start)
                 td = traces_dev[s, ...]
+                tr = traces_raw[s, ...]
                 thd = traces_hidden_dev[s, ...]
                 tod = traces_output_dev[s, ...]
                 for b, ct in enumerate(causal_traces):
-                    td[b, :] = ct
-                    if ct.shape == (256, 256):
+                    if isinstance(ct, tuple):
+                        ct, ct_hidden, ct_output, raw = ct
                         for j in range(input_repetitions):
-                            for k in range(n_hidden):
-                                thd[b, j, :, k, 0] = ct[j*n_input: (j+1)*n_input, k]
-                                thd[b, j, :, k, 1] = ct[j*n_input: (j+1)*n_input, k]
-                        tod[b, ..., 0] = ct[:n_hidden, n_hidden:n_hidden+n_output]
-                        tod[b, ..., 1] = ct[:n_hidden, n_hidden:n_hidden+n_output]
+                            thd[b, j, :, :] = ct_hidden[j*n_input: (j+1)*n_input, :]
+                        tod[b, ...] = ct_output
+                        tr[b, ...] = raw
                     else:
                         # Backend did not preprocess the correlation array
                         for j in range(input_repetitions):
@@ -685,6 +685,7 @@ def forward(
                             tod[b, :128, j, 1] = ct[k, 1::2]
                             tod[b, 128:, j, 0] = ct[k+1, :s_last:2]
                             tod[b, 128:, j, 1] = ct[k+1, 1:s_last:2]
+                    td[b, :, :] = ct
 
             if update_weights:
                 t_start_trace = time.time()
@@ -721,8 +722,8 @@ def forward(
             assert np.all(np.isfinite(traces_dev))
             assert np.all(np.isfinite(traces_hidden_dev))
             assert np.all(np.isfinite(traces_output_dev))
-            thd = traces_hidden_dev.mean(axis=(1, 4))
-            tod = traces_output_dev.mean(axis=3)
+            thd = traces_hidden_dev.mean(axis=1)
+            tod = traces_output_dev.copy()
             assert thd.shape == traces_hidden.shape
             assert tod.shape == traces_output.shape
 
@@ -851,9 +852,6 @@ def forward(
                         tb.add_scalar("per_sample/mean_hidden", thd[b].mean(), tb_s)
                         tb.add_scalar("per_sample/mean_output", tod[b].mean(), tb_s)
 
-
-                    tb.add_histogram("traces/differences_hidden", np.abs(traces_hidden_dev[..., 0] - traces_hidden_dev[..., 1]), tb_i)
-                    tb.add_histogram("traces/differences_output", np.abs(traces_output_dev[..., 0] - traces_output_dev[..., 1]), tb_i)
                     tb.add_scalar("traces/correlation_output", to_corr, tb_i)
                     tb.add_scalar("traces/correlation_hidden", th_corr, tb_i)
                     tb.add_scalar("traces/correlation_adj_output", to_corr_adj, tb_i)
@@ -874,18 +872,6 @@ def forward(
                     im = ax.pcolor(backend._routing.weights_assigned)
                     fig.colorbar(im)
                     tb.add_figure(f"weights/assigned", fig, tb_i)
-
-                    # inputs = halco.SynapseRowOnSynram.size
-                    # ordering = np.argsort(backend._routing._lookup)
-                    # waro = backend._routing.weights_assigned.T.copy()
-                    # waro[:inputs, :] = waro[:inputs, :][ordering, :]
-                    # waro[inputs:, :] = waro[inputs:, :][ordering, :]
-                    # fig = plt.figure(figsize=(16, 12))
-                    # gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
-                    # ax = fig.add_subplot(gs[0])
-                    # im = ax.pcolor(waro.T)
-                    # fig.colorbar(im)
-                    # tb.add_figure(f"weights/assigned_reord", fig, tb_i)
                     
                     fig = plt.figure(figsize=(16, 12))
                     gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
@@ -897,7 +883,14 @@ def forward(
                     fig = plt.figure(figsize=(16, 12))
                     gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
                     ax = fig.add_subplot(gs[0])
-                    im = ax.pcolor(traces_dev.mean(axis=0).T)
+                    im = ax.pcolor(traces_raw.mean(axis=0).T)
+                    fig.colorbar(im)
+                    tb.add_figure(f"traces/raw", fig, tb_i)
+
+                    fig = plt.figure(figsize=(16, 12))
+                    gs = GridSpec(1, 1,)# hspace=.01, wspace=.01, top=1, bottom=0, left=0, right=1)
+                    ax = fig.add_subplot(gs[0])
+                    im = ax.pcolor(traces_dev.mean(axis=0))
                     fig.colorbar(im)
                     tb.add_figure(f"traces/all", fig, tb_i)
 
